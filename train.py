@@ -22,10 +22,16 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+REPO_ROOT = SCRIPT_DIR.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 import gymnasium as gym
 import h5py
@@ -98,7 +104,18 @@ class CurriculumBadmintonEnv(gym.Env):
         self.track_stride = track_stride
         self.rng = np.random.default_rng(seed)
 
-        self.base_env = HumEnv(task=None, xml=xml_path, render_mode=None, state_init="Default")
+        xml_p = Path(xml_path)
+        if not xml_p.is_absolute():
+            cand = REPO_ROOT / xml_p
+            if cand.exists():
+                xml_p = cand
+        if not xml_p.is_file():
+            raise FileNotFoundError(
+                f"XML file not found: {xml_path}. "
+                "Invalid xml path can surface as MuJoCo XML parse errors."
+            )
+
+        self.base_env = HumEnv(task=None, xml=str(xml_p), render_mode=None, state_init="Default")
         self.model = self.base_env.model
         self.data = self.base_env.data
 

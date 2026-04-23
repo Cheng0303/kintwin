@@ -7,11 +7,4 @@ eval_outputs/
 
 # Large local dataset/training assets
 humenv_amass/
-models_recommended_v4_1_fresh/
-models_recommended_v4_2_continue/
-models_recommended_v4_3_continue/
-models_recommended_v4_4_continue/
-models_recommended_v4_fresh/
-models_recommended_v5_1_continue/
-models_recommended_v5_phase2_focus_fresh/
-models_v43_smoke/
+models_*/
