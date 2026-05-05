@@ -81,6 +81,17 @@ def _build_cmd(repo_root: Path, params: Dict[str, Any]) -> list[str]:
         "racket_tip_w",
         "racket_orient_w",
         "racket_tip_err_scale",
+        "fall_pelvis_h_th",
+        "fall_head_margin",
+        "fall_penalty",
+        "upright_pelvis_h_th",
+        "upright_head_margin",
+        "upright_tilt_cos",
+        "foot_height_margin",
+        "foot_height_penalty",
+        "upright_bonus",
+        "upright_track_scale",
+        "upright_penalty_scale",
     ]
 
     cmd = [sys.executable, str(train_script)]

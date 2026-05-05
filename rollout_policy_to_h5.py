@@ -52,6 +52,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--episode_length", type=int, default=300)
     p.add_argument("--racket_mass_scale", type=float, default=1.0)
     p.add_argument("--racket_body_name", type=str, default="Racket")
+    p.add_argument("--fall_pelvis_h_th", type=float, default=0.55)
+    p.add_argument("--fall_head_margin", type=float, default=0.20)
+    p.add_argument("--fall_penalty", type=float, default=20.0)
+    p.add_argument("--upright_tilt_cos", type=float, default=0.86)
+    p.add_argument("--foot_height_margin", type=float, default=-1.0)
+    p.add_argument("--foot_height_penalty", type=float, default=0.0)
     return p.parse_args()
 
 
@@ -122,6 +128,12 @@ def main() -> None:
         seed=args.seed,
         racket_mass_scale=args.racket_mass_scale,
         racket_body_name=args.racket_body_name,
+        fall_pelvis_h_th=args.fall_pelvis_h_th,
+        fall_head_margin=args.fall_head_margin,
+        fall_penalty=args.fall_penalty,
+        upright_tilt_cos=args.upright_tilt_cos,
+        foot_height_margin=args.foot_height_margin,
+        foot_height_penalty=args.foot_height_penalty,
     )
 
     def _bid(names: list[str]) -> int | None:
@@ -176,6 +188,23 @@ def main() -> None:
     done_seq: List[int] = []
     clip_seq: List[str] = []
 
+    def _append_frame(
+        qpos: np.ndarray,
+        qvel: np.ndarray,
+        action: np.ndarray,
+        reward: float,
+        done: int,
+        clip: str,
+    ) -> None:
+        qpos_seq.append(np.asarray(qpos, dtype=np.float64).copy())
+        qvel_seq.append(np.asarray(qvel, dtype=np.float64).copy())
+        action_seq.append(np.asarray(action, dtype=np.float64).copy())
+        actuator_force_seq.append(np.asarray(env.data.actuator_force, dtype=np.float64).copy())
+        qfrc_actuator_seq.append(np.asarray(env.data.qfrc_actuator, dtype=np.float64).copy())
+        reward_seq.append(float(reward))
+        done_seq.append(int(done))
+        clip_seq.append(str(clip))
+
     sampled_steps = 0
     max_sampled_steps = max(args.steps * args.max_sample_factor, args.steps)
     while len(qpos_seq) < args.steps and sampled_steps < max_sampled_steps:
@@ -197,19 +226,29 @@ def main() -> None:
 
         fell = bool(terminated or truncated) or pelvis_z < args.min_pelvis_z or knee_low or hand_low
         if fell:
+            if args.single_episode_only and args.allow_short:
+                _append_frame(
+                    info["qpos"],
+                    info["qvel"],
+                    action,
+                    reward,
+                    1,
+                    info.get("clip", ""),
+                )
+                break
             if args.single_episode_only:
                 break
             obs, info = _reset_constrained()
             continue
 
-        qpos_seq.append(np.asarray(info["qpos"], dtype=np.float64).copy())
-        qvel_seq.append(np.asarray(info["qvel"], dtype=np.float64).copy())
-        action_seq.append(np.asarray(action, dtype=np.float64).copy())
-        actuator_force_seq.append(np.asarray(env.data.actuator_force, dtype=np.float64).copy())
-        qfrc_actuator_seq.append(np.asarray(env.data.qfrc_actuator, dtype=np.float64).copy())
-        reward_seq.append(float(reward))
-        done_seq.append(0)
-        clip_seq.append(str(info.get("clip", "")))
+        _append_frame(
+            info["qpos"],
+            info["qvel"],
+            action,
+            reward,
+            0,
+            info.get("clip", ""),
+        )
 
     if len(qpos_seq) < args.steps and not (args.allow_short or args.single_episode_only):
         raise RuntimeError(

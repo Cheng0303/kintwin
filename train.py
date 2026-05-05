@@ -96,6 +96,17 @@ class CurriculumBadmintonEnv(gym.Env):
         reward_weights: Optional[Dict[str, float]] = None,
         racket_mass_scale: float = 1.0,
         racket_body_name: str = "Racket",
+        fall_pelvis_h_th: float = 0.55,
+        fall_head_margin: float = 0.20,
+        fall_penalty: float = 20.0,
+        upright_pelvis_h_th: float = -1.0,
+        upright_head_margin: float = -1.0,
+        upright_tilt_cos: float = 0.86,
+        foot_height_margin: float = -1.0,
+        foot_height_penalty: float = 0.0,
+        upright_bonus: float = 0.0,
+        upright_track_scale: float = 1.0,
+        upright_penalty_scale: float = 1.0,
     ) -> None:
         super().__init__()
         self.stage = stage
@@ -103,6 +114,17 @@ class CurriculumBadmintonEnv(gym.Env):
         self.episode_length = episode_length
         self.track_stride = track_stride
         self.rng = np.random.default_rng(seed)
+        self.fall_pelvis_h_th = float(fall_pelvis_h_th)
+        self.fall_head_margin = float(fall_head_margin)
+        self.fall_penalty = float(fall_penalty)
+        self.upright_pelvis_h_th = float(upright_pelvis_h_th)
+        self.upright_head_margin = float(upright_head_margin)
+        self.upright_tilt_cos = float(upright_tilt_cos)
+        self.foot_height_margin = float(foot_height_margin)
+        self.foot_height_penalty = float(foot_height_penalty)
+        self.upright_bonus = float(upright_bonus)
+        self.upright_track_scale = float(upright_track_scale)
+        self.upright_penalty_scale = float(upright_penalty_scale)
 
         xml_p = Path(xml_path)
         if not xml_p.is_absolute():
@@ -154,8 +176,12 @@ class CurriculumBadmintonEnv(gym.Env):
         self.start_idx = 0
 
         self.pelvis_bid = self._find_body_id(["Pelvis", "pelvis"])
+        self.head_bid = self._find_body_id(["Head", "head"])
+        self.torso_bid = self._find_body_id(["Torso", "torso"])
         self.lwrist_bid = self._find_body_id(["L_Hand", "hand_l", "left_hand", "L_Wrist"])
         self.rwrist_bid = self._find_body_id(["R_Hand", "hand_r", "right_hand", "R_Wrist"])
+        self.lfoot_bid = self._find_body_id(["L_Foot", "left_foot", "l_foot", "LeftFoot", "L_Ankle"])
+        self.rfoot_bid = self._find_body_id(["R_Foot", "right_foot", "r_foot", "RightFoot", "R_Ankle"])
 
         self.racket_sid = self._find_site_id(["racket_tip", "RacketTip", "racket_site"])
         self.racket_bid = self._find_body_id([racket_body_name, "racket", "Racket"])
@@ -296,11 +322,20 @@ class CurriculumBadmintonEnv(gym.Env):
         self.t += 1
         done_by_len = self.t >= self.episode_length
 
-        # A simple fall detector: pelvis too low.
+        # Head-aware fall detector: pelvis too low or head drops near pelvis level.
         pelvis_h = float(self.data.xpos[self.pelvis_bid, 2]) if self.pelvis_bid is not None else float(self.data.qpos[2])
-        done_by_fall = pelvis_h < 0.55
+        upper_h = pelvis_h + 0.5
+        upper_margin = self.fall_head_margin
+        if self.head_bid is not None:
+            upper_h = float(self.data.xpos[self.head_bid, 2])
+        elif self.torso_bid is not None:
+            upper_h = float(self.data.xpos[self.torso_bid, 2])
+            # Torso is naturally lower than head, so use a softer threshold.
+            upper_margin = 0.3 * self.fall_head_margin
+
+        done_by_fall = (pelvis_h < self.fall_pelvis_h_th) or (upper_h < pelvis_h + upper_margin)
         if done_by_fall:
-            reward -= 5.0
+            reward -= self.fall_penalty
 
         terminated = bool(done_by_len or done_by_fall)
         truncated = False
@@ -316,9 +351,29 @@ class CurriculumBadmintonEnv(gym.Env):
     ) -> Tuple[float, Dict[str, float]]:
         w = self.weights
 
+        pelvis_h = float(self.data.xpos[self.pelvis_bid, 2]) if self.pelvis_bid is not None else float(self.data.qpos[2])
+        upper_h = pelvis_h + 0.5
+        upper_margin = self.upright_head_margin
+        if self.head_bid is not None:
+            upper_h = float(self.data.xpos[self.head_bid, 2])
+        elif self.torso_bid is not None:
+            upper_h = float(self.data.xpos[self.torso_bid, 2])
+            if upper_margin >= 0:
+                upper_margin = 0.3 * upper_margin
+
+        pelvis_ok = True if self.upright_pelvis_h_th < 0 else pelvis_h >= self.upright_pelvis_h_th
+        head_ok = True if upper_margin < 0 else upper_h >= pelvis_h + upper_margin
+        # tilt gating (torso local z-axis should align with world z)
+        torso_tilt_ok = True
+        if self.torso_bid is not None and self.upright_tilt_cos >= 0:
+            torso_xmat = self.data.xmat[self.torso_bid].reshape(3, 3)
+            torso_tilt_ok = float(torso_xmat[2, 2]) >= self.upright_tilt_cos
+        upright = bool(pelvis_ok and head_ok and torso_tilt_ok)
+
         # Shared regularization terms.
-        control_cost = w.control_penalty * float(np.mean(np.square(action)))
-        vel_cost = w.vel_penalty * float(np.mean(np.square(self.data.qvel)))
+        penalty_scale = self.upright_penalty_scale if upright else 0.0
+        control_cost = penalty_scale * w.control_penalty * float(np.mean(np.square(action)))
+        vel_cost = penalty_scale * w.vel_penalty * float(np.mean(np.square(self.data.qvel)))
         alive = w.alive_bonus
 
         # Balance: root height + COM stability.
@@ -334,7 +389,29 @@ class CurriculumBadmintonEnv(gym.Env):
         pelvis_xy = self.data.xpos[self.pelvis_bid, :2] if self.pelvis_bid is not None else self.data.qpos[:2]
         r_com = float(np.exp(-10.0 * np.linalg.norm(com_xy - pelvis_xy)))
 
-        r_balance = w.root_height_w * r_root_h + w.com_w * r_com + alive - control_cost - vel_cost
+        foot_over = 0.0
+        foot_penalty = 0.0
+        if self.foot_height_margin >= 0 and self.foot_height_penalty > 0:
+            foot_zs = []
+            if self.lfoot_bid is not None:
+                foot_zs.append(float(self.data.xpos[self.lfoot_bid, 2]))
+            if self.rfoot_bid is not None:
+                foot_zs.append(float(self.data.xpos[self.rfoot_bid, 2]))
+            if foot_zs:
+                foot_limit = pelvis_h + self.foot_height_margin
+                foot_over = max(0.0, max(foot_zs) - foot_limit)
+                foot_penalty = self.foot_height_penalty * foot_over
+
+        upright_bonus = self.upright_bonus if upright else 0.0
+        r_balance = (
+            w.root_height_w * r_root_h
+            + w.com_w * r_com
+            + alive
+            + upright_bonus
+            - control_cost
+            - vel_cost
+            - foot_penalty
+        )
 
         # Tracking terms.
         qpos_err = float(np.mean(np.abs(self.data.qpos - tqpos)))
@@ -357,13 +434,15 @@ class CurriculumBadmintonEnv(gym.Env):
             wrist_err = 0.5 * (np.linalg.norm(l_curr - l_ref) + np.linalg.norm(r_curr - r_ref))
             r_wrist = float(np.exp(-10.0 * wrist_err))
 
-        r_track = (
+        base_track = (
             w.qpos_track_w * r_qpos
             + w.qvel_track_w * r_qvel
             + w.root_track_w * r_root
             + w.wrist_track_w * r_wrist
             + 0.10 * r_balance
         )
+        track_scale = 1.0 if upright else self.upright_track_scale
+        r_track = track_scale * base_track
 
         # Racket integration (optional if model includes racket body/site).
         r_racket_tip = 0.0
@@ -412,7 +491,15 @@ class CurriculumBadmintonEnv(gym.Env):
                 dot = float(np.clip(np.dot(xmat_curr[:, 0], xmat_ref[:, 0]), -1.0, 1.0))
                 r_racket_orient = 0.5 * (dot + 1.0)
 
-        r_racket = w.racket_tip_w * r_racket_tip + w.racket_orient_w * r_racket_orient + 0.10 * r_track
+        # r_racket = w.racket_tip_w * r_racket_tip + w.racket_orient_w * r_racket_orient + 0.10 * r_track
+        r_racket = (
+            w.racket_tip_w * r_racket_tip
+            + w.racket_orient_w * r_racket_orient
+            + 0.20 * r_track
+            + 0.30 * r_balance
+        )
+        if not upright:
+            r_racket *= self.upright_track_scale
 
         if self.stage == "balance":
             reward = r_balance
@@ -434,6 +521,9 @@ class CurriculumBadmintonEnv(gym.Env):
             "r_racket_tip": float(r_racket_tip),
             "r_racket_orient": float(r_racket_orient),
             "r_racket_tip_err": float(racket_tip_err),
+            "r_upright": 1.0 if upright else 0.0,
+            "r_foot_penalty": float(foot_penalty),
+            "r_foot_over": float(foot_over),
         }
         return reward, terms
 
@@ -476,6 +566,17 @@ def build_vec_env(
     reward_weights: Dict[str, float],
     racket_mass_scale: float,
     racket_body_name: str,
+    fall_pelvis_h_th: float,
+    fall_head_margin: float,
+    fall_penalty: float,
+    upright_pelvis_h_th: float,
+    upright_head_margin: float,
+    upright_tilt_cos: float,
+    foot_height_margin: float,
+    foot_height_penalty: float,
+    upright_bonus: float,
+    upright_track_scale: float,
+    upright_penalty_scale: float,
 ) -> DummyVecEnv:
     def _make(rank: int):
         def _thunk():
@@ -489,6 +590,17 @@ def build_vec_env(
                 reward_weights=reward_weights,
                 racket_mass_scale=racket_mass_scale,
                 racket_body_name=racket_body_name,
+                fall_pelvis_h_th=fall_pelvis_h_th,
+                fall_head_margin=fall_head_margin,
+                fall_penalty=fall_penalty,
+                upright_pelvis_h_th=upright_pelvis_h_th,
+                upright_head_margin=upright_head_margin,
+                upright_tilt_cos=upright_tilt_cos,
+                foot_height_margin=foot_height_margin,
+                foot_height_penalty=foot_height_penalty,
+                upright_bonus=upright_bonus,
+                upright_track_scale=upright_track_scale,
+                upright_penalty_scale=upright_penalty_scale,
             )
 
         return _thunk
@@ -511,6 +623,17 @@ def train_stage(
     reward_weights: Dict[str, float],
     racket_mass_scale: float,
     racket_body_name: str,
+    fall_pelvis_h_th: float,
+    fall_head_margin: float,
+    fall_penalty: float,
+    upright_pelvis_h_th: float,
+    upright_head_margin: float,
+    upright_tilt_cos: float,
+    foot_height_margin: float,
+    foot_height_penalty: float,
+    upright_bonus: float,
+    upright_track_scale: float,
+    upright_penalty_scale: float,
     init_model: str = "",
 ) -> PPO:
     vec_env = build_vec_env(
@@ -524,6 +647,17 @@ def train_stage(
         reward_weights,
         racket_mass_scale,
         racket_body_name,
+        fall_pelvis_h_th,
+        fall_head_margin,
+        fall_penalty,
+        upright_pelvis_h_th,
+        upright_head_margin,
+        upright_tilt_cos,
+        foot_height_margin,
+        foot_height_penalty,
+        upright_bonus,
+        upright_track_scale,
+        upright_penalty_scale,
     )
 
     if model is None:
@@ -593,6 +727,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--racket_tip_w", type=float, default=0.20)
     parser.add_argument("--racket_orient_w", type=float, default=0.20)
     parser.add_argument("--racket_tip_err_scale", type=float, default=12.0)
+    parser.add_argument("--fall_pelvis_h_th", type=float, default=0.55)
+    parser.add_argument("--fall_head_margin", type=float, default=0.20)
+    parser.add_argument("--fall_penalty", type=float, default=20.0)
+    parser.add_argument("--upright_pelvis_h_th", type=float, default=-1.0)
+    parser.add_argument("--upright_head_margin", type=float, default=-1.0)
+    parser.add_argument("--upright_tilt_cos", type=float, default=0.86)
+    parser.add_argument("--foot_height_margin", type=float, default=-1.0)
+    parser.add_argument("--foot_height_penalty", type=float, default=0.0)
+    parser.add_argument("--upright_bonus", type=float, default=0.0)
+    parser.add_argument("--upright_track_scale", type=float, default=1.0)
+    parser.add_argument("--upright_penalty_scale", type=float, default=1.0)
 
     # Curriculum stages (set 0 to skip a stage)
     parser.add_argument("--balance_steps", type=int, default=1_000_000)
@@ -653,6 +798,17 @@ def main() -> None:
             reward_weights=reward_weights,
             racket_mass_scale=args.racket_mass_scale,
             racket_body_name=args.racket_body_name,
+            fall_pelvis_h_th=args.fall_pelvis_h_th,
+            fall_head_margin=args.fall_head_margin,
+            fall_penalty=args.fall_penalty,
+            upright_pelvis_h_th=args.upright_pelvis_h_th,
+            upright_head_margin=args.upright_head_margin,
+            upright_tilt_cos=args.upright_tilt_cos,
+            foot_height_margin=args.foot_height_margin,
+            foot_height_penalty=args.foot_height_penalty,
+            upright_bonus=args.upright_bonus,
+            upright_track_scale=args.upright_track_scale,
+            upright_penalty_scale=args.upright_penalty_scale,
             init_model=init_model_path,
         )
         # Only use init_model for the first executed stage.
