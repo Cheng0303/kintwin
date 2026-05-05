@@ -125,6 +125,7 @@ class CurriculumBadmintonEnv(gym.Env):
         self.upright_bonus = float(upright_bonus)
         self.upright_track_scale = float(upright_track_scale)
         self.upright_penalty_scale = float(upright_penalty_scale)
+        self.racket_tip_offset: Optional[np.ndarray] = None
 
         xml_p = Path(xml_path)
         if not xml_p.is_absolute():
@@ -281,6 +282,12 @@ class CurriculumBadmintonEnv(gym.Env):
         # Start from reference pose for easier stabilization and faster curriculum convergence.
         idx0 = self._target_index()
         self.base_env.reset(options={"qpos": self.clip_qpos[idx0], "qvel": self.clip_qvel[idx0]})
+        self.racket_tip_offset = None
+        if self.clip_racket_tip is not None and self.racket_sid is not None:
+            self._set_ref_state(self.clip_qpos[idx0], self.clip_qvel[idx0])
+            npz_tip0 = self.clip_racket_tip[min(idx0, len(self.clip_racket_tip) - 1)]
+            ref_tip0 = self.ref_data.site_xpos[self.racket_sid].copy()
+            self.racket_tip_offset = ref_tip0 - npz_tip0
         obs = self.base_env.get_obs()["proprio"]
         info = {"clip": self.clip_name, "start_idx": self.start_idx, "stage": self.stage}
         return obs, info
@@ -455,7 +462,9 @@ class CurriculumBadmintonEnv(gym.Env):
             # Prefer explicit racket_tip target from converted NPZ.
             if self.clip_racket_tip is not None:
                 ridx = min(tidx, len(self.clip_racket_tip) - 1)
-                tip_ref = self.clip_racket_tip[ridx]
+                tip_ref = self.clip_racket_tip[ridx].copy()
+                if self.racket_tip_offset is not None:
+                    tip_ref = tip_ref + self.racket_tip_offset
                 if self.racket_sid is not None:
                     tip_curr = self.data.site_xpos[self.racket_sid]
                 elif self.racket_bid is not None:
@@ -495,8 +504,8 @@ class CurriculumBadmintonEnv(gym.Env):
         r_racket = (
             w.racket_tip_w * r_racket_tip
             + w.racket_orient_w * r_racket_orient
-            + 0.20 * r_track
-            + 0.30 * r_balance
+            + 0.35 * r_track
+            + 0.22 * r_balance
         )
         if not upright:
             r_racket *= self.upright_track_scale
