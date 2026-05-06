@@ -468,37 +468,20 @@ class CurriculumBadmintonEnv(gym.Env):
         r_racket_orient = 0.0
         racket_tip_err = 0.0
         tip_scale = max(w.racket_tip_err_scale, 1e-6)
-        if self.stage == "racket" and (self.clip_racket_tip is not None or self.racket_sid is not None or self.racket_bid is not None):
+        if self.stage == "racket" and (self.racket_sid is not None or self.racket_bid is not None):
             self._set_ref_state(tqpos, tqvel)
 
-            # Prefer explicit racket_tip target from converted NPZ.
-            if self.clip_racket_tip is not None:
-                ridx = min(tidx, len(self.clip_racket_tip) - 1)
+            if self.racket_sid is not None:
+                tip_curr = self.data.site_xpos[self.racket_sid].copy()
                 tip_ref = self.ref_data.site_xpos[self.racket_sid].copy()
-                if self.racket_sid is not None:
-                    tip_curr = self.data.site_xpos[self.racket_sid]
-                elif self.racket_bid is not None:
-                    tip_curr = self.data.xpos[self.racket_bid]
-                elif self.rwrist_bid is not None:
-                    # Fallback when model has no racket object: use right wrist as proxy.
-                    tip_curr = self.data.xpos[self.rwrist_bid]
-                else:
-                    tip_curr = None
+            elif self.racket_bid is not None:
+                tip_curr = self.data.xpos[self.racket_bid].copy()
+                tip_ref = self.ref_data.xpos[self.racket_bid].copy()
+            else:
+                tip_curr = None
+                tip_ref = None
 
-                if tip_curr is not None:
-                    tip_err = float(np.linalg.norm(tip_curr - tip_ref))
-                    racket_tip_err = tip_err
-                    r_racket_tip = float(np.exp(-tip_scale * tip_err))
-
-            if r_racket_tip == 0.0 and self.racket_sid is not None:
-                tip_curr = self.data.site_xpos[self.racket_sid]
-                tip_ref = self.ref_data.site_xpos[self.racket_sid]
-                tip_err = float(np.linalg.norm(tip_curr - tip_ref))
-                racket_tip_err = tip_err
-                r_racket_tip = float(np.exp(-tip_scale * tip_err))
-            elif r_racket_tip == 0.0 and self.racket_bid is not None:
-                tip_curr = self.data.xpos[self.racket_bid]
-                tip_ref = self.ref_data.xpos[self.racket_bid]
+            if tip_curr is not None and tip_ref is not None:
                 tip_err = float(np.linalg.norm(tip_curr - tip_ref))
                 racket_tip_err = tip_err
                 r_racket_tip = float(np.exp(-tip_scale * tip_err))
