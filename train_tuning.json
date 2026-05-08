@@ -23,11 +23,151 @@
     "racket_orient_w": 0.06,
     "racket_tip_err_scale": 12.0,
     "low_pose_margin": -1.0,
-    "low_pose_penalty": 0.0
+    "low_pose_penalty": 0.0,
+    "foot_slip_penalty": 0.0
   },
   
   "profiles": {
-    "recommended_v6_7_fk_tip": {
+    "recommended_v6_7ll": {
+  "save_dir": "kintwin/models_recommended_v6_7ll",
+  "init_model": "kintwin/models_recommended_v6_7_long/ppo_curriculum_final.zip",
+
+  "hdf5_dir": "kintwin/humenv_amass_stable",
+  "n_envs": 4,
+  "episode_length": 500,
+
+  "balance_steps": 0,
+  "track_steps": 5000000,
+  "racket_steps": 1000000,
+
+  "control_penalty": 0.03,
+  "vel_penalty": 0.008,
+  "alive_bonus": 0.8,
+
+  "root_height_w": 0.9,
+  "com_w": 0.9,
+
+  "qpos_track_w": 0.68,
+  "qvel_track_w": 0.25,
+  "root_track_w": 0.53,
+  "wrist_track_w": 0.28,
+
+  "racket_tip_w": 0.08,
+  "racket_orient_w": 0.03,
+  "racket_tip_err_scale": 1.5,
+
+  "fall_pelvis_h_th": 0.58,
+  "fall_head_margin": 0.20,
+  "fall_penalty": 20.0,
+
+  "upright_pelvis_h_th": 0.63,
+  "upright_head_margin": 0.15,
+  "upright_tilt_cos": 0.88,
+
+  "foot_height_margin": 0.25,
+  "foot_height_penalty": 1.6,
+  "foot_slip_penalty": 0.005,
+
+  "low_pose_margin": 0.18,
+  "low_pose_penalty": 0.8,
+
+  "upright_bonus": 0.9,
+  "upright_track_scale": 0.20,
+  "upright_penalty_scale": 1.0
+},
+"recommended_v6_7_long": {
+  "save_dir": "kintwin/models_recommended_v6_7_long",
+  "init_model": "kintwin/models_recommended_v6_7/ppo_curriculum_final.zip",
+
+  "hdf5_dir": "kintwin/humenv_amass_stable",
+  "n_envs": 4,
+  "episode_length": 500,
+
+  "balance_steps": 0,
+  "track_steps": 6000000,
+  "racket_steps": 9000000,
+
+  "control_penalty": 0.03,
+  "vel_penalty": 0.008,
+  "alive_bonus": 0.8,
+
+  "root_height_w": 0.9,
+  "com_w": 0.9,
+
+  "qpos_track_w": 0.65,
+  "qvel_track_w": 0.25,
+  "root_track_w": 0.50,
+  "wrist_track_w": 0.28,
+
+  "racket_tip_w": 0.08,
+  "racket_orient_w": 0.03,
+  "racket_tip_err_scale": 1.5,
+
+  "fall_pelvis_h_th": 0.58,
+  "fall_head_margin": 0.20,
+  "fall_penalty": 20.0,
+
+  "upright_pelvis_h_th": 0.63,
+  "upright_head_margin": 0.15,
+  "upright_tilt_cos": 0.88,
+
+  "foot_height_margin": 0.25,
+  "foot_height_penalty": 1.6,
+
+  "low_pose_margin": 0.18,
+  "low_pose_penalty": 0.8,
+
+  "upright_bonus": 0.9,
+  "upright_track_scale": 0.20,
+  "upright_penalty_scale": 1.0
+},
+    "recommended_v6_8": {
+  "save_dir": "kintwin/models_recommended_v6_8",
+  "init_model": "kintwin/models_recommended_v6_7/ppo_curriculum_final.zip",
+
+  "hdf5_dir": "kintwin/humenv_amass_stable",
+  "n_envs": 4,
+  "episode_length": 500,
+
+  "balance_steps": 0,
+  "track_steps": 500000,
+  "racket_steps": 1500000,
+
+  "control_penalty": 0.025,
+  "vel_penalty": 0.006,
+  "alive_bonus": 0.8,
+
+  "root_height_w": 0.9,
+  "com_w": 0.9,
+
+  "qpos_track_w": 0.65,
+  "qvel_track_w": 0.25,
+  "root_track_w": 0.50,
+  "wrist_track_w": 0.28,
+
+  "racket_tip_w": 0.08,
+  "racket_orient_w": 0.03,
+  "racket_tip_err_scale": 1.5,
+
+  "fall_pelvis_h_th": 0.58,
+  "fall_head_margin": 0.20,
+  "fall_penalty": 20.0,
+
+  "upright_pelvis_h_th": 0.63,
+  "upright_head_margin": 0.15,
+  "upright_tilt_cos": 0.88,
+
+  "foot_height_margin": 0.25,
+  "foot_height_penalty": 1.75,
+
+  "low_pose_margin": 0.18,
+  "low_pose_penalty": 0.8,
+
+  "upright_bonus": 0.9,
+  "upright_track_scale": 0.20,
+  "upright_penalty_scale": 1.0
+},
+    "recommended_v6_7": {
   "save_dir": "kintwin/models_recommended_v6_7",
   "init_model": "kintwin/models_recommended_v6_6/ppo_curriculum_final.zip",
 

@@ -109,6 +109,7 @@ class CurriculumBadmintonEnv(gym.Env):
         upright_penalty_scale: float = 1.0,
         low_pose_margin: float = -1.0,
         low_pose_penalty: float = 0.0,
+        foot_slip_penalty: float = 0.0,
     ) -> None:
         super().__init__()
         self.stage = stage
@@ -129,6 +130,7 @@ class CurriculumBadmintonEnv(gym.Env):
         self.upright_penalty_scale = float(upright_penalty_scale)
         self.low_pose_margin = float(low_pose_margin)
         self.low_pose_penalty = float(low_pose_penalty)
+        self.foot_slip_penalty = float(foot_slip_penalty)
         self.racket_tip_offset: Optional[np.ndarray] = None
         
 
@@ -188,6 +190,7 @@ class CurriculumBadmintonEnv(gym.Env):
         self.rwrist_bid = self._find_body_id(["R_Hand", "hand_r", "right_hand", "R_Wrist"])
         self.lfoot_bid = self._find_body_id(["L_Foot", "left_foot", "l_foot", "LeftFoot", "L_Ankle"])
         self.rfoot_bid = self._find_body_id(["R_Foot", "right_foot", "r_foot", "RightFoot", "R_Ankle"])
+        self.foot_bids = [bid for bid in (self.lfoot_bid, self.rfoot_bid) if bid is not None]
 
         self.racket_sid = self._find_site_id(["racket_tip", "RacketTip", "racket_site"])
         self.racket_bid = self._find_body_id([racket_body_name, "racket", "Racket"])
@@ -420,6 +423,15 @@ class CurriculumBadmintonEnv(gym.Env):
                 foot_over = max(0.0, max(foot_zs) - foot_limit)
                 foot_penalty = self.foot_height_penalty * foot_over
 
+        foot_slip_cost = 0.0
+        if self.foot_slip_penalty > 0 and self.foot_bids:
+            for foot_bid in self.foot_bids:
+                foot_z = float(self.data.xpos[foot_bid, 2])
+                foot_xy_vel = self.data.cvel[foot_bid, 3:5]
+                if foot_z < 0.08:
+                    foot_slip_cost += float(np.sum(foot_xy_vel ** 2))
+            foot_slip_cost *= self.foot_slip_penalty
+
         upright_bonus = self.upright_bonus if upright else 0.0
         r_balance = (
             w.root_height_w * r_root_h
@@ -430,6 +442,7 @@ class CurriculumBadmintonEnv(gym.Env):
             - vel_cost
             - foot_penalty
             - low_pose_cost
+            - foot_slip_cost
         )
 
         # Tracking terms.
@@ -468,7 +481,10 @@ class CurriculumBadmintonEnv(gym.Env):
         r_racket_orient = 0.0
         racket_tip_err = 0.0
         tip_scale = max(w.racket_tip_err_scale, 1e-6)
-        if self.stage == "racket" and (self.racket_sid is not None or self.racket_bid is not None):
+
+        if self.stage == "racket" and (
+            self.racket_sid is not None or self.racket_bid is not None
+        ):
             self._set_ref_state(tqpos, tqvel)
 
             if self.racket_sid is not None:
@@ -487,7 +503,6 @@ class CurriculumBadmintonEnv(gym.Env):
                 r_racket_tip = float(np.exp(-tip_scale * tip_err))
 
             if self.racket_bid is not None:
-                # Compare one racket local axis (x-axis) as a lightweight orientation reward.
                 xmat_curr = self.data.xmat[self.racket_bid].reshape(3, 3)
                 xmat_ref = self.ref_data.xmat[self.racket_bid].reshape(3, 3)
                 dot = float(np.clip(np.dot(xmat_curr[:, 0], xmat_ref[:, 0]), -1.0, 1.0))
@@ -528,6 +543,7 @@ class CurriculumBadmintonEnv(gym.Env):
             "r_foot_over": float(foot_over),
             "r_low_pose_err": float(low_pose_err),
             "r_low_pose_cost": float(low_pose_cost),
+            "r_foot_slip_cost": float(foot_slip_cost),
         }
         return reward, terms
 
@@ -580,6 +596,7 @@ def build_vec_env(
     foot_height_penalty: float,
     low_pose_margin: float,
     low_pose_penalty: float,
+    foot_slip_penalty: float,
     upright_bonus: float,
     upright_track_scale: float,
     upright_penalty_scale: float,
@@ -606,6 +623,7 @@ def build_vec_env(
                 foot_height_penalty=foot_height_penalty,
                 low_pose_margin=low_pose_margin,
                 low_pose_penalty=low_pose_penalty,
+                foot_slip_penalty=foot_slip_penalty,
                 upright_bonus=upright_bonus,
                 upright_track_scale=upright_track_scale,
                 upright_penalty_scale=upright_penalty_scale,
@@ -641,6 +659,7 @@ def train_stage(
     foot_height_penalty: float,
     low_pose_margin: float,
     low_pose_penalty: float,
+    foot_slip_penalty: float,
     upright_bonus: float,
     upright_track_scale: float,
     upright_penalty_scale: float,
@@ -667,6 +686,7 @@ def train_stage(
         foot_height_penalty,
         low_pose_margin,
         low_pose_penalty,
+        foot_slip_penalty,
         upright_bonus,
         upright_track_scale,
         upright_penalty_scale,
@@ -749,6 +769,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--foot_height_penalty", type=float, default=0.0)
     parser.add_argument("--low_pose_margin", type=float, default=-1.0)
     parser.add_argument("--low_pose_penalty", type=float, default=0.0)
+    parser.add_argument("--foot_slip_penalty", type=float, default=0.0)
     parser.add_argument("--upright_bonus", type=float, default=0.0)
     parser.add_argument("--upright_track_scale", type=float, default=1.0)
     parser.add_argument("--upright_penalty_scale", type=float, default=1.0)
@@ -822,6 +843,7 @@ def main() -> None:
             foot_height_penalty=args.foot_height_penalty,
             low_pose_margin=args.low_pose_margin,
             low_pose_penalty=args.low_pose_penalty,
+            foot_slip_penalty=args.foot_slip_penalty,
             upright_bonus=args.upright_bonus,
             upright_track_scale=args.upright_track_scale,
             upright_penalty_scale=args.upright_penalty_scale,
