@@ -79,6 +79,8 @@ with h5py.File(h5_file, "r") as hf:
 
 qpos = episode_data["qpos"]
 qvel = episode_data["qvel"]
+racket_tip_curr = episode_data.get("racket_tip_curr")
+racket_tip_ref = episode_data.get("racket_tip_ref")
 
 print(f"Loaded {len(qpos)} frames")
 
@@ -164,6 +166,31 @@ if args.output:
         for i in range(len(qpos)):
             env.set_physics(qpos=qpos[i], qvel=qvel[i])
             renderer.update_scene(env.data, camera=env.camera)
+            if racket_tip_curr is not None and racket_tip_ref is not None:
+                scene = renderer._scene
+                base = int(scene.ngeom)
+                if base + 2 < scene.maxgeom:
+                    size = np.array([0.02, 0.0, 0.0], dtype=np.float64)
+                    mat = np.eye(3, dtype=np.float64).reshape(9)
+                    rgba_red = np.array([1.0, 0.0, 0.0, 1.0], dtype=np.float32)
+                    rgba_green = np.array([0.0, 1.0, 0.0, 1.0], dtype=np.float32)
+                    mujoco.mjv_initGeom(
+                        scene.geoms[base],
+                        mujoco.mjtGeom.mjGEOM_SPHERE,
+                        size,
+                        np.asarray(racket_tip_curr[i], dtype=np.float64),
+                        mat,
+                        rgba_red,
+                    )
+                    mujoco.mjv_initGeom(
+                        scene.geoms[base + 1],
+                        mujoco.mjtGeom.mjGEOM_SPHERE,
+                        size,
+                        np.asarray(racket_tip_ref[i], dtype=np.float64),
+                        mat,
+                        rgba_green,
+                    )
+                    scene.ngeom = base + 2
             writer.append_data(renderer.render())
             if i % 30 == 0 or i == len(qpos) - 1:
                 print(f"Rendered {i + 1}/{len(qpos)} frames", flush=True)

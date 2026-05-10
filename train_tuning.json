@@ -32,7 +32,7 @@
   "save_dir": "kintwin/models_recommended_v6_7ll",
   "init_model": "kintwin/models_recommended_v6_7_long/ppo_curriculum_final.zip",
 
-  "hdf5_dir": "kintwin/humenv_amass_stable",
+  "hdf5_dir": "kintwin/humenv_amass_rotfix",
   "n_envs": 4,
   "episode_length": 500,
 
@@ -79,7 +79,7 @@
   "save_dir": "kintwin/models_recommended_v6_7_long",
   "init_model": "kintwin/models_recommended_v6_7/ppo_curriculum_final.zip",
 
-  "hdf5_dir": "kintwin/humenv_amass_stable",
+  "hdf5_dir": "kintwin/humenv_amass_rotfix",
   "n_envs": 4,
   "episode_length": 500,
 
@@ -125,7 +125,7 @@
   "save_dir": "kintwin/models_recommended_v6_8",
   "init_model": "kintwin/models_recommended_v6_7/ppo_curriculum_final.zip",
 
-  "hdf5_dir": "kintwin/humenv_amass_stable",
+  "hdf5_dir": "kintwin/humenv_amass_rotfix",
   "n_envs": 4,
   "episode_length": 500,
 
@@ -171,7 +171,7 @@
   "save_dir": "kintwin/models_recommended_v6_7",
   "init_model": "kintwin/models_recommended_v6_6/ppo_curriculum_final.zip",
 
-  "hdf5_dir": "kintwin/humenv_amass_stable",
+  "hdf5_dir": "kintwin/humenv_amass_rotfix",
   "n_envs": 4,
   "episode_length": 500,
 
@@ -217,7 +217,7 @@
   "save_dir": "kintwin/models_recommended_v6_6",
   "init_model": "kintwin/models_recommended_v6_4/ppo_curriculum_final.zip",
 
-  "hdf5_dir": "kintwin/humenv_amass_stable",
+  "hdf5_dir": "kintwin/humenv_amass_rotfix",
   "n_envs": 4,
   "episode_length": 500,
 
@@ -263,7 +263,7 @@
       "save_dir": "kintwin/models_recommended_v6_5",
       "init_model": "kintwin/models_recommended_v6_4/ppo_curriculum_final.zip",
 
-      "hdf5_dir": "kintwin/humenv_amass_stable",
+      "hdf5_dir": "kintwin/humenv_amass_rotfix",
       "n_envs": 4,
       "episode_length": 500,
 
@@ -309,7 +309,7 @@
       "save_dir": "kintwin/models_recommended_v6_4",
       "init_model": "kintwin/models_recommended_v6_3/ppo_curriculum_final.zip",
 
-      "hdf5_dir": "kintwin/humenv_amass_stable",
+      "hdf5_dir": "kintwin/humenv_amass_rotfix",
       "n_envs": 4,
       "episode_length": 500,
 
@@ -352,7 +352,7 @@
       "save_dir": "kintwin/models_recommended_v6_3",
       "init_model": "kintwin/models_recommended_v6_2/ppo_curriculum_final.zip",
 
-      "hdf5_dir": "kintwin/humenv_amass_stable",
+      "hdf5_dir": "kintwin/humenv_amass_rotfix",
       "n_envs": 4,
       "episode_length": 500,
 
@@ -437,7 +437,7 @@
     },
     "recommended_v6_2": {
       "save_dir": "kintwin/models_recommended_v6_2",
-      "hdf5_dir": "kintwin/humenv_amass_stable",
+      "hdf5_dir": "kintwin/humenv_amass_rotfix",
       "n_envs": 4,
       "episode_length": 500,
       "upright_pelvis_h_th": 0.65,
@@ -765,17 +765,17 @@
       "racket_tip_w": 0.22,
       "racket_orient_w": 0.18
     },
-    "recommended_stable_v3": {
-      "save_dir": "kintwin/models_recommended_stable_v3",
+    "recommended_rotfix_v3": {
+      "save_dir": "kintwin/models_recommended_rotfix_v3",
       "n_envs": 2,
       "episode_length": 240,
       "balance_steps": 600000,
       "track_steps": 6000000,
       "racket_steps": 2000000
     },
-    "continue_from_stable_v3": {
-      "save_dir": "kintwin/models_recommended_stable_v3_continue",
-      "init_model": "kintwin/models_recommended_stable_v3/ppo_curriculum_final.zip",
+    "continue_from_rotfix_v3": {
+      "save_dir": "kintwin/models_recommended_rotfix_v3_continue",
+      "init_model": "kintwin/models_recommended_rotfix_v3/ppo_curriculum_final.zip",
       "n_envs": 2,
       "episode_length": 240,
       "balance_steps": 0,
@@ -790,8 +790,8 @@
       "track_steps": 6000000,
       "racket_steps": 2000000
     },
-    "recommended_stable_v2": {
-      "save_dir": "kintwin/models_recommended_stable_v2",
+    "recommended_rotfix_v2": {
+      "save_dir": "kintwin/models_recommended_rotfix_v2",
       "n_envs": 2,
       "episode_length": 240,
       "balance_steps": 800000,

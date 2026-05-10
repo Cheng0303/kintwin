@@ -91,6 +91,7 @@ def _build_cmd(repo_root: Path, params: Dict[str, Any]) -> list[str]:
         "foot_height_penalty",
         "low_pose_margin",
         "low_pose_penalty",
+        "foot_slip_penalty",
         "upright_bonus",
         "upright_track_scale",
         "upright_penalty_scale",

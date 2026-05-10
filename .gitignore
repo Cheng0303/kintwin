@@ -7,4 +7,5 @@ eval_outputs/
 
 # Large local dataset/training assets
 humenv_amass/
+humenv_amass_*/
 models_*/
