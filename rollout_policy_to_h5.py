@@ -58,6 +58,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--upright_tilt_cos", type=float, default=0.86)
     p.add_argument("--foot_height_margin", type=float, default=-1.0)
     p.add_argument("--foot_height_penalty", type=float, default=0.0)
+    p.add_argument("--hdf5_file", type=str, default=None)
     return p.parse_args()
 
 
@@ -228,24 +229,23 @@ def main() -> None:
         action, _ = model.predict(obs, deterministic=args.deterministic)
         obs, reward, terminated, truncated, info = env.step(action)
 
-        ref_tip = None
         npz_tip = None
         if env.clip_racket_tip is not None:
             ridx = min(tidx, len(env.clip_racket_tip) - 1)
-            npz_tip = env.clip_racket_tip[ridx]
+            npz_tip = env.clip_racket_tip[ridx].copy()
             if env.racket_tip_offset is not None:
                 npz_tip = npz_tip + env.racket_tip_offset
-            ref_tip = npz_tip
-        if ref_tip is None and env.racket_sid is not None:
-            ref_tip = env.ref_data.site_xpos[env.racket_sid]
-        if ref_tip is None and env.racket_bid is not None:
-            ref_tip = env.ref_data.xpos[env.racket_bid]
-        if ref_tip is None and env.rwrist_bid is not None:
-            ref_tip = env.ref_data.xpos[env.rwrist_bid]
 
         fk_ref_tip = None
         if env.racket_sid is not None:
-            fk_ref_tip = env.ref_data.site_xpos[env.racket_sid]
+            fk_ref_tip = env.ref_data.site_xpos[env.racket_sid].copy()
+        elif env.racket_bid is not None:
+            fk_ref_tip = env.ref_data.xpos[env.racket_bid].copy()
+        elif env.rwrist_bid is not None:
+            fk_ref_tip = env.ref_data.xpos[env.rwrist_bid].copy()
+
+        # rollout 的正式 reference 用 HDF5 FK
+        ref_tip = fk_ref_tip
 
         curr_tip = None
         if env.racket_sid is not None:
@@ -369,6 +369,8 @@ def main() -> None:
         ep0.create_dataset("clip", data=clips, compression="gzip")
         ep0.create_dataset("racket_tip_curr", data=racket_tip_curr, compression="gzip")
         ep0.create_dataset("racket_tip_ref", data=racket_tip_ref, compression="gzip")
+        ep0.create_dataset("racket_tip_npz", data=racket_tip_npz, compression="gzip")
+        ep0.create_dataset("racket_tip_fk", data=racket_tip_fk, compression="gzip")
 
     print(f"Saved rollout HDF5: {out_h5}")
     print(f"Frames: {len(qpos)}")

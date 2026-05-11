@@ -505,15 +505,22 @@ class CurriculumBadmintonEnv(gym.Env):
             if self.racket_bid is not None:
                 xmat_curr = self.data.xmat[self.racket_bid].reshape(3, 3)
                 xmat_ref = self.ref_data.xmat[self.racket_bid].reshape(3, 3)
-                dot = float(np.clip(np.dot(xmat_curr[:, 0], xmat_ref[:, 0]), -1.0, 1.0))
-                r_racket_orient = 0.5 * (dot + 1.0)
+                shaft_curr = -xmat_curr[:, 0]
+                shaft_ref = -xmat_ref[:, 0]
 
+                dot = float(np.clip(np.dot(shaft_curr, shaft_ref), -1.0, 1.0))
+                r_racket_orient = 0.5 * (dot + 1.0)
         # r_racket = w.racket_tip_w * r_racket_tip + w.racket_orient_w * r_racket_orient + 0.10 * r_track
-        r_racket = (
+        r_racket_pure = (
             w.racket_tip_w * r_racket_tip
             + w.racket_orient_w * r_racket_orient
-            + 0.35 * r_track
-            + 0.22 * r_balance
+        )
+        r_racket_track_part = 0.65 * r_track
+        r_racket_balance_part = 0.06 * r_balance
+        r_racket = (
+            r_racket_pure
+            + r_racket_track_part
+            + r_racket_balance_part
         )
         if not upright:
             r_racket *= self.upright_track_scale
@@ -544,6 +551,13 @@ class CurriculumBadmintonEnv(gym.Env):
             "r_low_pose_err": float(low_pose_err),
             "r_low_pose_cost": float(low_pose_cost),
             "r_foot_slip_cost": float(foot_slip_cost),
+            "r_racket_pure": float(r_racket_pure),
+            "r_racket_track_part": float(r_racket_track_part),
+            "r_racket_balance_part": float(r_racket_balance_part),
+
+            "r_racket_tip": float(r_racket_tip),
+            "r_racket_orient": float(r_racket_orient),
+            "r_racket_tip_err": float(racket_tip_err),
         }
         return reward, terms
 
