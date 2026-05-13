@@ -446,35 +446,76 @@ class CurriculumBadmintonEnv(gym.Env):
         )
 
         # Tracking terms.
-        qpos_err = float(np.mean(np.abs(self.data.qpos - tqpos)))
-        qvel_err = float(np.mean(np.abs(self.data.qvel - tqvel)))
-        root_err = float(np.linalg.norm(self.data.qpos[:7] - tqpos[:7]))
+        qpos_diff = np.zeros(self.model.nv, dtype=np.float64)
+        mujoco.mj_differentiatePos(
+            self.model,
+            qpos_diff,
+            1.0,
+            tqpos,
+            self.data.qpos,
+        )
 
-        r_qpos = float(np.exp(-8.0 * qpos_err))
+        # freejoint: qpos has 7 dims, qvel/differentiate result has 6 root dims
+        root_pos_err = float(np.linalg.norm(self.data.qpos[:3] - tqpos[:3]))
+        root_rot_err = float(np.linalg.norm(qpos_diff[3:6]))
+        joint_err = float(np.mean(np.abs(qpos_diff[6:]))) if qpos_diff.shape[0] > 6 else 0.0
+
+        qpos_diff = np.zeros(self.model.nv, dtype=np.float64)
+        mujoco.mj_differentiatePos(
+            self.model,
+            qpos_diff,
+            1.0,
+            tqpos,
+            self.data.qpos,
+        )
+
+        root_pos_err = float(np.linalg.norm(self.data.qpos[:3] - tqpos[:3]))
+        root_rot_err = float(np.linalg.norm(qpos_diff[3:6]))
+        joint_err = float(np.mean(np.abs(qpos_diff[6:]))) if qpos_diff.shape[0] > 6 else 0.0
+
+        qpos_err = joint_err
+        qvel_err = float(np.mean(np.abs(self.data.qvel - tqvel)))
+        root_err = root_pos_err + 0.5 * root_rot_err
+
+        r_qpos = float(np.exp(-4.0 * qpos_err))
         r_qvel = float(np.exp(-2.5 * qvel_err))
-        r_root = float(np.exp(-6.0 * root_err))
+        r_root = float(np.exp(-4.0 * root_err))
 
         # Wrist endpoint tracking uses FK on target qpos/qvel.
         r_wrist = 0.0
         has_wrists = self.lwrist_bid is not None and self.rwrist_bid is not None
         if has_wrists:
             self._set_ref_state(tqpos, tqvel)
-            l_curr = self.data.xpos[self.lwrist_bid]
-            r_curr = self.data.xpos[self.rwrist_bid]
-            l_ref = self.ref_data.xpos[self.lwrist_bid]
-            r_ref = self.ref_data.xpos[self.rwrist_bid]
-            wrist_err = 0.5 * (np.linalg.norm(l_curr - l_ref) + np.linalg.norm(r_curr - r_ref))
+            l_curr = self.data.xpos[self.lwrist_bid].copy()
+            r_curr = self.data.xpos[self.rwrist_bid].copy()
+            l_ref = self.ref_data.xpos[self.lwrist_bid].copy()
+            r_ref = self.ref_data.xpos[self.rwrist_bid].copy()
+
+            root_curr = self.data.xpos[self.pelvis_bid].copy()
+            root_ref = self.ref_data.xpos[self.pelvis_bid].copy()
+
+            R_curr = self.data.xmat[self.pelvis_bid].reshape(3, 3).copy()
+            R_ref = self.ref_data.xmat[self.pelvis_bid].reshape(3, 3).copy()
+
+            l_curr_local = R_curr.T @ (l_curr - root_curr)
+            r_curr_local = R_curr.T @ (r_curr - root_curr)
+
+            l_ref_local = R_ref.T @ (l_ref - root_ref)
+            r_ref_local = R_ref.T @ (r_ref - root_ref)
+
+            wrist_err = 0.5 * (
+                np.linalg.norm(l_curr_local - l_ref_local)
+                + np.linalg.norm(r_curr_local - r_ref_local)
+            )
             r_wrist = float(np.exp(-10.0 * wrist_err))
 
-        base_track = (
+        r_pose = (
             w.qpos_track_w * r_qpos
             + w.qvel_track_w * r_qvel
             + w.root_track_w * r_root
             + w.wrist_track_w * r_wrist
-            + 0.10 * r_balance
         )
-        track_scale = 1.0 if upright else self.upright_track_scale
-        r_track = track_scale * base_track
+        r_track = r_pose
 
         # Racket integration (optional if model includes racket body/site).
         r_racket_tip = 0.0
@@ -498,7 +539,10 @@ class CurriculumBadmintonEnv(gym.Env):
                 tip_ref = None
 
             if tip_curr is not None and tip_ref is not None:
+                # World-space racket tip tracking:
+                # compare current racket tip with HDF5 FK reference racket tip directly.
                 tip_err = float(np.linalg.norm(tip_curr - tip_ref))
+
                 racket_tip_err = tip_err
                 r_racket_tip = float(np.exp(-tip_scale * tip_err))
 
@@ -515,7 +559,7 @@ class CurriculumBadmintonEnv(gym.Env):
             w.racket_tip_w * r_racket_tip
             + w.racket_orient_w * r_racket_orient
         )
-        r_racket_track_part = 0.65 * r_track
+        r_racket_track_part = 0.70 * r_pose
         r_racket_balance_part = 0.06 * r_balance
         r_racket = (
             r_racket_pure
@@ -528,7 +572,7 @@ class CurriculumBadmintonEnv(gym.Env):
         if self.stage == "balance":
             reward = r_balance
         elif self.stage == "track":
-            reward = r_track
+            reward = r_pose + 0.08 * r_balance
         elif self.stage == "racket":
             reward = r_racket
         else:
