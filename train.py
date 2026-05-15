@@ -110,6 +110,8 @@ class CurriculumBadmintonEnv(gym.Env):
         low_pose_margin: float = -1.0,
         low_pose_penalty: float = 0.0,
         foot_slip_penalty: float = 0.0,
+        body_pos_log_path: str = "",
+        body_pos_debug_every: int = 10,
     ) -> None:
         super().__init__()
         self.stage = stage
@@ -131,6 +133,8 @@ class CurriculumBadmintonEnv(gym.Env):
         self.low_pose_margin = float(low_pose_margin)
         self.low_pose_penalty = float(low_pose_penalty)
         self.foot_slip_penalty = float(foot_slip_penalty)
+        self.body_pos_log_path = str(body_pos_log_path).strip()
+        self.body_pos_debug_every = int(body_pos_debug_every)
         self.racket_tip_offset: Optional[np.ndarray] = None
         
 
@@ -191,6 +195,49 @@ class CurriculumBadmintonEnv(gym.Env):
         self.lfoot_bid = self._find_body_id(["L_Foot", "left_foot", "l_foot", "LeftFoot", "L_Ankle"])
         self.rfoot_bid = self._find_body_id(["R_Foot", "right_foot", "r_foot", "RightFoot", "R_Ankle"])
         self.foot_bids = [bid for bid in (self.lfoot_bid, self.rfoot_bid) if bid is not None]
+
+        self.track_body_names = [
+            "Pelvis",
+            "Torso",
+            "Spine",
+            "Chest",
+            "Head",
+            "L_Shoulder",
+            "L_Elbow",
+            "L_Wrist",
+            "L_Hand",
+            "R_Shoulder",
+            "R_Elbow",
+            "R_Wrist",
+            "R_Hand",
+            "L_Hip",
+            "L_Knee",
+            "L_Ankle",
+            "L_Toe",
+            "R_Hip",
+            "R_Knee",
+            "R_Ankle",
+            "R_Toe",
+        ]
+        self.track_bids = []
+        for name in self.track_body_names:
+            bid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, name)
+            if bid >= 0:
+                self.track_bids.append(bid)
+
+        self.orient_body_names = [
+            "Pelvis",
+            "Torso",
+            "Chest",
+            "Head",
+            "L_Shoulder",
+            "R_Shoulder",
+        ]
+        self.orient_bids = []
+        for name in self.orient_body_names:
+            bid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, name)
+            if bid >= 0:
+                self.orient_bids.append(bid)
 
         self.racket_sid = self._find_site_id(["racket_tip", "RacketTip", "racket_site"])
         self.racket_bid = self._find_body_id([racket_body_name, "racket", "Racket"])
@@ -423,14 +470,19 @@ class CurriculumBadmintonEnv(gym.Env):
                 foot_over = max(0.0, max(foot_zs) - foot_limit)
                 foot_penalty = self.foot_height_penalty * foot_over
 
-        foot_slip_cost = 0.0
-        if self.foot_slip_penalty > 0 and self.foot_bids:
+        foot_raw_slip = 0.0
+        foot_contact_count = 0.0
+
+        if self.foot_bids:
             for foot_bid in self.foot_bids:
                 foot_z = float(self.data.xpos[foot_bid, 2])
                 foot_xy_vel = self.data.cvel[foot_bid, 3:5]
+
                 if foot_z < 0.08:
-                    foot_slip_cost += float(np.sum(foot_xy_vel ** 2))
-            foot_slip_cost *= self.foot_slip_penalty
+                    foot_raw_slip += float(np.sum(foot_xy_vel ** 2))
+                    foot_contact_count += 1.0
+
+        foot_slip_cost = self.foot_slip_penalty * foot_raw_slip
 
         upright_bonus = self.upright_bonus if upright else 0.0
         r_balance = (
@@ -456,10 +508,6 @@ class CurriculumBadmintonEnv(gym.Env):
         )
 
         # freejoint: qpos has 7 dims, qvel/differentiate result has 6 root dims
-        root_pos_err = float(np.linalg.norm(self.data.qpos[:3] - tqpos[:3]))
-        root_rot_err = float(np.linalg.norm(qpos_diff[3:6]))
-        joint_err = float(np.mean(np.abs(qpos_diff[6:]))) if qpos_diff.shape[0] > 6 else 0.0
-
         qpos_diff = np.zeros(self.model.nv, dtype=np.float64)
         mujoco.mj_differentiatePos(
             self.model,
@@ -480,6 +528,7 @@ class CurriculumBadmintonEnv(gym.Env):
         r_qpos = float(np.exp(-4.0 * qpos_err))
         r_qvel = float(np.exp(-2.5 * qvel_err))
         r_root = float(np.exp(-4.0 * root_err))
+
 
         # Wrist endpoint tracking uses FK on target qpos/qvel.
         r_wrist = 0.0
@@ -509,18 +558,115 @@ class CurriculumBadmintonEnv(gym.Env):
             )
             r_wrist = float(np.exp(-10.0 * wrist_err))
 
+        r_body_pos = 0.0
+        body_pos_err = 0.0
+        if self.pelvis_bid is not None and self.track_bids:
+            self._set_ref_state(tqpos, tqvel)
+            root_curr = self.data.xpos[self.pelvis_bid].copy()
+            root_ref = self.ref_data.xpos[self.pelvis_bid].copy()
+
+            R_curr = self.data.xmat[self.pelvis_bid].reshape(3, 3).copy()
+            R_ref = self.ref_data.xmat[self.pelvis_bid].reshape(3, 3).copy()
+
+            errs = []
+            for bid in self.track_bids:
+                p_curr = self.data.xpos[bid].copy()
+                p_ref = self.ref_data.xpos[bid].copy()
+
+                p_curr_local = R_curr.T @ (p_curr - root_curr)
+                p_ref_local = R_ref.T @ (p_ref - root_ref)
+
+                errs.append(np.linalg.norm(p_curr_local - p_ref_local))
+
+            body_pos_err = float(np.mean(errs))
+            r_body_pos = float(np.exp(-3.0 * body_pos_err))
+
+            debug_enabled = os.environ.get("KINTWIN_BODY_POS_DEBUG", "1") != "0"
+            debug_every = int(
+                os.environ.get(
+                    "KINTWIN_BODY_POS_DEBUG_EVERY",
+                    str(self.body_pos_debug_every),
+                )
+            )
+            debug_every = max(1, debug_every)
+            if debug_enabled and self.clip_qpos is not None and (self.t % debug_every == 0):
+                debug_lines = []
+                for offset in range(-5, 6):
+                    ref_idx = int(np.clip(tidx + offset, 0, len(self.clip_qpos) - 1))
+                    self._set_ref_state(self.clip_qpos[ref_idx], self.clip_qvel[ref_idx])
+
+                    root_ref_dbg = self.ref_data.xpos[self.pelvis_bid].copy()
+                    R_ref_dbg = self.ref_data.xmat[self.pelvis_bid].reshape(3, 3).copy()
+
+                    debug_errs = []
+                    for bid in self.track_bids:
+                        p_curr = self.data.xpos[bid].copy()
+                        p_ref = self.ref_data.xpos[bid].copy()
+
+                        p_curr_local = R_curr.T @ (p_curr - root_curr)
+                        p_ref_local = R_ref_dbg.T @ (p_ref - root_ref_dbg)
+                        debug_errs.append(np.linalg.norm(p_curr_local - p_ref_local))
+
+                    debug_err = float(np.mean(debug_errs))
+                    debug_lines.append(f"{offset}:{debug_err:.4f}")
+
+                print(
+                    "[body-pos-debug]"
+                    f" clip={self.clip_name}"
+                    f" tidx={tidx}"
+                    f" offsets={' '.join(debug_lines)}"
+                )
+                if self.body_pos_log_path:
+                    try:
+                        with open(self.body_pos_log_path, "a", encoding="utf-8") as f:
+                            f.write(
+                                "[body-pos-debug]"
+                                f" clip={self.clip_name}"
+                                f" tidx={tidx}"
+                                f" offsets={' '.join(debug_lines)}\n"
+                            )
+                    except OSError:
+                        pass
+
+        r_upper_orient = 0.0
+        if self.orient_bids:
+            self._set_ref_state(tqpos, tqvel)
+            orient_rewards = []
+            for bid in self.orient_bids:
+                R_curr = self.data.xmat[bid].reshape(3, 3).copy()
+                R_ref = self.ref_data.xmat[bid].reshape(3, 3).copy()
+
+                R_rel = R_curr.T @ R_ref
+                cos_angle = float(np.clip((np.trace(R_rel) - 1.0) / 2.0, -1.0, 1.0))
+                orient_rewards.append(0.5 * (cos_angle + 1.0))
+
+            r_upper_orient = float(np.mean(orient_rewards))
+
         r_pose = (
-            w.qpos_track_w * r_qpos
-            + w.qvel_track_w * r_qvel
+            0.25 * w.qpos_track_w * r_qpos
+            + 3.0 * r_body_pos
+            + 0.6 * r_upper_orient
+            + 0.5 * w.qvel_track_w * r_qvel
             + w.root_track_w * r_root
             + w.wrist_track_w * r_wrist
         )
-        r_track = r_pose
+
+        r_track_balance_part = 0.16 * r_balance
+
+        r_track = (
+            r_pose
+            + r_track_balance_part
+        )
 
         # Racket integration (optional if model includes racket body/site).
         r_racket_tip = 0.0
         r_racket_orient = 0.0
         racket_tip_err = 0.0
+
+        r_racket_pure = 0.0
+        r_racket_track_part = 0.0
+        r_racket_balance_part = 0.0
+
         tip_scale = max(w.racket_tip_err_scale, 1e-6)
 
         if self.stage == "racket" and (
@@ -572,7 +718,7 @@ class CurriculumBadmintonEnv(gym.Env):
         if self.stage == "balance":
             reward = r_balance
         elif self.stage == "track":
-            reward = r_pose + 0.08 * r_balance
+            reward = r_track
         elif self.stage == "racket":
             reward = r_racket
         else:
@@ -582,26 +728,33 @@ class CurriculumBadmintonEnv(gym.Env):
             "r_balance": float(r_balance),
             "r_track": float(r_track),
             "r_racket": float(r_racket),
+
             "r_qpos": float(r_qpos),
             "r_qvel": float(r_qvel),
             "r_root": float(r_root),
             "r_wrist": float(r_wrist),
-            "r_racket_tip": float(r_racket_tip),
-            "r_racket_orient": float(r_racket_orient),
-            "r_racket_tip_err": float(racket_tip_err),
-            "r_upright": 1.0 if upright else 0.0,
-            "r_foot_penalty": float(foot_penalty),
-            "r_foot_over": float(foot_over),
-            "r_low_pose_err": float(low_pose_err),
-            "r_low_pose_cost": float(low_pose_cost),
-            "r_foot_slip_cost": float(foot_slip_cost),
-            "r_racket_pure": float(r_racket_pure),
-            "r_racket_track_part": float(r_racket_track_part),
-            "r_racket_balance_part": float(r_racket_balance_part),
+            "r_body_pos": float(r_body_pos),
+            "r_body_pos_err": float(body_pos_err),
+            "r_upper_orient": float(r_upper_orient),
 
             "r_racket_tip": float(r_racket_tip),
             "r_racket_orient": float(r_racket_orient),
             "r_racket_tip_err": float(racket_tip_err),
+            "r_racket_pure": float(r_racket_pure),
+            "r_racket_track_part": float(r_racket_track_part),
+            "r_racket_balance_part": float(r_racket_balance_part),
+
+            "r_upright": 1.0 if upright else 0.0,
+            "r_foot_penalty": float(foot_penalty),
+            "r_foot_raw_slip": float(foot_raw_slip),
+            "r_foot_slip_cost": float(foot_slip_cost),
+            "r_foot_contact_count": float(foot_contact_count),
+            "r_foot_over": float(foot_over),
+            "r_low_pose_err": float(low_pose_err),
+            "r_low_pose_cost": float(low_pose_cost),
+            "r_foot_slip_cost": float(foot_slip_cost),
+            "r_pose": float(r_pose),
+            "r_track_balance_part": float(r_track_balance_part),
         }
         return reward, terms
 
@@ -658,6 +811,8 @@ def build_vec_env(
     upright_bonus: float,
     upright_track_scale: float,
     upright_penalty_scale: float,
+    body_pos_log_path: str = "",
+    body_pos_debug_every: int = 10,
 ) -> DummyVecEnv:
     def _make(rank: int):
         def _thunk():
@@ -685,6 +840,8 @@ def build_vec_env(
                 upright_bonus=upright_bonus,
                 upright_track_scale=upright_track_scale,
                 upright_penalty_scale=upright_penalty_scale,
+                body_pos_log_path=body_pos_log_path,
+                body_pos_debug_every=body_pos_debug_every,
             )
 
         return _thunk
@@ -722,7 +879,11 @@ def train_stage(
     upright_track_scale: float,
     upright_penalty_scale: float,
     init_model: str = "",
+    body_pos_log_path: str = "",
+    body_pos_debug_every: int = 10,
 ) -> PPO:
+    if not body_pos_log_path:
+        body_pos_log_path = str(save_dir / f"body_pos_debug_{stage}.log")
     vec_env = build_vec_env(
         hdf5_dir,
         stage,
@@ -748,6 +909,8 @@ def train_stage(
         upright_bonus,
         upright_track_scale,
         upright_penalty_scale,
+        body_pos_log_path,
+        body_pos_debug_every,
     )
 
     if model is None:
@@ -831,6 +994,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--upright_bonus", type=float, default=0.0)
     parser.add_argument("--upright_track_scale", type=float, default=1.0)
     parser.add_argument("--upright_penalty_scale", type=float, default=1.0)
+    parser.add_argument("--body_pos_debug_every", type=int, default=10)
 
     # Curriculum stages (set 0 to skip a stage)
     parser.add_argument("--balance_steps", type=int, default=1_000_000)
@@ -906,6 +1070,7 @@ def main() -> None:
             upright_track_scale=args.upright_track_scale,
             upright_penalty_scale=args.upright_penalty_scale,
             init_model=init_model_path,
+            body_pos_debug_every=args.body_pos_debug_every,
         )
         # Only use init_model for the first executed stage.
         init_model_path = ""

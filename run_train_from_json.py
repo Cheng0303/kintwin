@@ -95,6 +95,7 @@ def _build_cmd(repo_root: Path, params: Dict[str, Any]) -> list[str]:
         "upright_bonus",
         "upright_track_scale",
         "upright_penalty_scale",
+        "body_pos_debug_every",
     ]
 
     cmd = [sys.executable, str(train_script)]
