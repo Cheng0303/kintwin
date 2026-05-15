@@ -1,5 +1,5 @@
 {
-  "default_profile": "recommended_v5_phase2_focus_fresh",
+  "default_profile": "recommended_v13_goal_obs_fresh",
   "common": {
     "hdf5_dir": "kintwin/humenv_amass",
     "xml_path": "humenv/assets/robot.xml",
@@ -28,6 +28,53 @@
   },
   
   "profiles": {
+"recommended_v13_goal_obs_fresh": {
+  "save_dir": "kintwin/models_recommended_v13_goal_obs_fresh",
+  "init_model": "",
+
+  "hdf5_dir": "kintwin/humenv_amass_rotfix_single",
+  "n_envs": 4,
+  "episode_length": 120,
+
+  "balance_steps": 300000,
+  "track_steps": 1000000,
+  "racket_steps": 1500000,
+
+  "control_penalty": 0.015,
+  "vel_penalty": 0.003,
+  "alive_bonus": 0.6,
+
+  "root_height_w": 0.7,
+  "com_w": 0.7,
+
+  "qpos_track_w": 0.6,
+  "qvel_track_w": 0.15,
+  "root_track_w": 0.7,
+  "wrist_track_w": 0.45,
+
+  "racket_tip_w": 0.30,
+  "racket_orient_w": 0.10,
+  "racket_tip_err_scale": 3.0,
+
+  "fall_pelvis_h_th": 0.55,
+  "fall_head_margin": 0.20,
+  "fall_penalty": 20.0,
+
+  "upright_pelvis_h_th": 0.60,
+  "upright_head_margin": 0.15,
+  "upright_tilt_cos": 0.85,
+
+  "foot_height_margin": 0.25,
+  "foot_height_penalty": 0.3,
+  "foot_slip_penalty": 0.0,
+
+  "low_pose_margin": 0.20,
+  "low_pose_penalty": 0.2,
+
+  "upright_bonus": 0.5,
+  "upright_track_scale": 0.5,
+  "upright_penalty_scale": 1.0
+},
 "recommended_v7_t12": {
   "save_dir": "kintwin/models_recommended_v7_t12",
   "init_model": "kintwin/models_recommended_v7_t11/ppo_curriculum_final.zip",

@@ -115,7 +115,6 @@ class CurriculumBadmintonEnv(gym.Env):
     ) -> None:
         super().__init__()
         self.stage = stage
-        self.npz_dir = Path(npz_dir)
         self.episode_length = episode_length
         self.track_stride = track_stride
         self.rng = np.random.default_rng(seed)
@@ -135,7 +134,6 @@ class CurriculumBadmintonEnv(gym.Env):
         self.foot_slip_penalty = float(foot_slip_penalty)
         self.body_pos_log_path = str(body_pos_log_path).strip()
         self.body_pos_debug_every = int(body_pos_debug_every)
-        self.racket_tip_offset: Optional[np.ndarray] = None
         
 
         xml_p = Path(xml_path)
@@ -178,7 +176,6 @@ class CurriculumBadmintonEnv(gym.Env):
         self.clip_qpos: Optional[np.ndarray] = None
         self.clip_qvel: Optional[np.ndarray] = None
         self.clip_name: str = ""
-        self.clip_racket_tip: Optional[np.ndarray] = None
         self.t = 0
         self.start_idx = 0
 
@@ -245,7 +242,7 @@ class CurriculumBadmintonEnv(gym.Env):
             low=-np.inf,
             high=np.inf,
             shape=(proprio_dim + goal_dim + prev_action_dim,),
-            dtype=np.float64,
+            dtype=np.float32,
         )
 
         if not CurriculumBadmintonEnv._printed_racket_info:
@@ -298,21 +295,6 @@ class CurriculumBadmintonEnv(gym.Env):
             qvel = hf["ep_0"]["qvel"][:]
         return qpos, qvel, f.name
 
-    def _npz_from_h5_name(self, h5_name: str) -> Optional[Path]:
-        # Expected pattern: 0-NewRacket_<session>_<clip>.hdf5
-        stem = Path(h5_name).stem
-        prefix = "0-NewRacket_"
-        if not stem.startswith(prefix):
-            return None
-        body = stem[len(prefix):]
-        parts = body.split("_")
-        if len(parts) < 3:
-            return None
-        session = "_".join(parts[:2])
-        clip = "_".join(parts[2:])
-        p = self.npz_dir / session / f"{clip}.npz"
-        return p if p.exists() else None
-
     def _target_index(self) -> int:
         assert self.clip_qpos is not None
         return min(self.start_idx + self.t * self.track_stride, len(self.clip_qpos) - 1)
@@ -337,7 +319,7 @@ class CurriculumBadmintonEnv(gym.Env):
         if self.clip_qpos is None or self.clip_qvel is None:
             goal_dim = len(self.future_offsets) * (2 * self.model.nv + 6 + 3)
             goal_zeros = np.zeros(goal_dim, dtype=np.float64)
-            return np.concatenate([proprio, goal_zeros, self.prev_action.ravel()]).astype(np.float64)
+            return np.concatenate([proprio, goal_zeros, self.prev_action.ravel()]).astype(np.float32)
 
         goal_parts: List[np.ndarray] = []
         for off in self.future_offsets:
@@ -356,7 +338,8 @@ class CurriculumBadmintonEnv(gym.Env):
                 self.data.qpos,
                 tqpos,
             )
-            qvel_diff = tqvel - self.data.qvel
+            qpos_diff = np.clip(qpos_diff, -5.0, 5.0)
+            qvel_diff = np.clip(tqvel - self.data.qvel, -20.0, 20.0)
 
             self._set_ref_state(tqpos, tqvel)
 
@@ -373,6 +356,7 @@ class CurriculumBadmintonEnv(gym.Env):
                     wrist_delta[3:6] = R_curr.T @ (
                         self.ref_data.xpos[self.rwrist_bid] - self.data.xpos[self.rwrist_bid]
                     )
+            wrist_delta = np.clip(wrist_delta, -2.0, 2.0)
 
             racket_delta = np.zeros(3, dtype=np.float64)
             if self.pelvis_bid is not None:
@@ -388,25 +372,17 @@ class CurriculumBadmintonEnv(gym.Env):
                 tip_ref = self._get_ref_racket_tip()
                 if tip_curr is not None and tip_ref is not None:
                     racket_delta = R_curr.T @ (tip_ref - tip_curr)
+            racket_delta = np.clip(racket_delta, -2.0, 2.0)
 
             goal_parts.extend([qpos_diff, qvel_diff, wrist_delta, racket_delta])
 
-        return np.concatenate([proprio, *goal_parts, self.prev_action.ravel()]).astype(np.float64)
+        return np.concatenate([proprio, *goal_parts, self.prev_action.ravel()]).astype(np.float32)
 
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
         if seed is not None:
             self.rng = np.random.default_rng(seed)
 
         self.clip_qpos, self.clip_qvel, self.clip_name = self._sample_clip()
-        self.clip_racket_tip = None
-        npz_path = self._npz_from_h5_name(self.clip_name)
-        if npz_path is not None:
-            try:
-                with np.load(npz_path) as npz:
-                    if "racket_tip" in npz.files:
-                        self.clip_racket_tip = np.asarray(npz["racket_tip"], dtype=np.float64)
-            except Exception:
-                self.clip_racket_tip = None
         max_start = max(0, len(self.clip_qpos) - self.episode_length * self.track_stride - 1)
         self.start_idx = int(self.rng.integers(0, max_start + 1)) if max_start > 0 else 0
         self.t = 0
@@ -415,12 +391,6 @@ class CurriculumBadmintonEnv(gym.Env):
         # Start from reference pose for easier stabilization and faster curriculum convergence.
         idx0 = self._target_index()
         self.base_env.reset(options={"qpos": self.clip_qpos[idx0], "qvel": self.clip_qvel[idx0]})
-        self.racket_tip_offset = None
-        if self.clip_racket_tip is not None and self.racket_sid is not None:
-            self._set_ref_state(self.clip_qpos[idx0], self.clip_qvel[idx0])
-            npz_tip0 = self.clip_racket_tip[min(idx0, len(self.clip_racket_tip) - 1)]
-            ref_tip0 = self.ref_data.site_xpos[self.racket_sid].copy()
-            self.racket_tip_offset = ref_tip0 - npz_tip0
         obs = self._get_obs()
         info = {"clip": self.clip_name, "start_idx": self.start_idx, "stage": self.stage}
         return obs, info
@@ -520,6 +490,7 @@ class CurriculumBadmintonEnv(gym.Env):
         # Shared regularization terms.
         penalty_scale = self.upright_penalty_scale if upright else 0.0
         control_cost = penalty_scale * w.control_penalty * float(np.mean(np.square(action)))
+        action_delta_cost = 0.003 * float(np.mean(np.square(action - self.prev_action)))
         vel_cost = penalty_scale * w.vel_penalty * float(np.mean(np.square(self.data.qvel)))
         alive = w.alive_bonus
 
@@ -580,6 +551,7 @@ class CurriculumBadmintonEnv(gym.Env):
             + alive
             + upright_bonus
             - control_cost
+            - action_delta_cost
             - vel_cost
             - foot_penalty
             - low_pose_cost
@@ -770,9 +742,7 @@ class CurriculumBadmintonEnv(gym.Env):
 
         tip_scale = max(w.racket_tip_err_scale, 1e-6)
 
-        if self.stage == "racket" and (
-            self.racket_sid is not None or self.racket_bid is not None
-        ):
+        if self.racket_sid is not None or self.racket_bid is not None:
             self._set_ref_state(tqpos, tqvel)
 
             if self.racket_sid is not None:
@@ -802,7 +772,10 @@ class CurriculumBadmintonEnv(gym.Env):
                 dot = float(np.clip(np.dot(shaft_curr, shaft_ref), -1.0, 1.0))
                 r_racket_orient = 0.5 * (dot + 1.0)
         # r_racket = w.racket_tip_w * r_racket_tip + w.racket_orient_w * r_racket_orient + 0.10 * r_track
-        r_racket_task = 0.75 * r_racket_tip + 0.25 * r_racket_orient
+        tip_w = max(float(w.racket_tip_w), 0.0)
+        orient_w = max(float(w.racket_orient_w), 0.0)
+        task_den = max(tip_w + orient_w, 1e-6)
+        r_racket_task = (tip_w * r_racket_tip + orient_w * r_racket_orient) / task_den
         r_racket_pure = r_racket_task
         r_racket_track_part = 0.55 * r_pose
         r_racket_balance_part = 0.15 * r_balance_norm
@@ -854,6 +827,7 @@ class CurriculumBadmintonEnv(gym.Env):
             "r_low_pose_err": float(low_pose_err),
             "r_low_pose_cost": float(low_pose_cost),
             "r_foot_slip_cost": float(foot_slip_cost),
+            "r_action_delta_cost": float(action_delta_cost),
             "r_pose": float(r_pose),
             "r_track_balance_part": float(r_track_balance_part),
         }
