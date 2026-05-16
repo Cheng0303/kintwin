@@ -818,21 +818,34 @@ class CurriculumBadmintonEnv(gym.Env):
         if not upright:
             r_racket *= self.upright_track_scale
 
-        pose_cost = (
-            0.55 * qpos_mse
-            + 0.20 * qvel_mse
-            + 0.15 * root_mse
-            + 0.10 * wrist_mse
+        pose_cost_raw = (
+            4.0 * body_pos_mse
+            + 0.30 * upper_orient_mse
+            + 0.25 * qpos_mse
+            + 0.03 * qvel_mse
+            + 0.50 * root_mse
+            + 0.30 * wrist_mse
         )
-        r_track_mse = 0.80 + 0.20 * r_balance_base_norm - pose_cost
+        pose_cost = float(np.clip(pose_cost_raw, 0.0, 2.0))
 
-        racket_cost = (
-            0.6 * body_pos_mse
-            + 0.4 * upper_orient_mse
-            + 1.5 * racket_tip_mse
-            + 0.5 * racket_orient_mse
+        r_track_mse = (
+            1.00
+            + 0.20 * r_balance_base_norm
+            - pose_cost
         )
-        r_racket_mse = 0.80 + 0.20 * r_balance_base_norm - (pose_cost + racket_cost)
+
+        racket_cost_raw = (
+            0.12 * racket_tip_mse
+            + 0.10 * racket_orient_mse
+        )
+        racket_cost = float(np.clip(racket_cost_raw, 0.0, 1.5))
+
+        r_racket_mse = (
+            0.70 * r_track_mse
+            + 0.15 * r_balance_base_norm
+            + 0.15 * r_racket_task
+            - racket_cost
+        )
 
         reward_mode_mse = self.reward_mode == "mse_hybrid"
 
@@ -868,6 +881,7 @@ class CurriculumBadmintonEnv(gym.Env):
             "r_body_pos_err": float(body_pos_err),
             "r_upper_orient": float(r_upper_orient),
             "r_pose_cost": float(pose_cost),
+            "r_pose_cost_raw": float(pose_cost_raw),
             "r_qpos_mse": float(qpos_mse),
             "r_qvel_mse": float(qvel_mse),
             "r_root_mse": float(root_mse),
@@ -881,6 +895,7 @@ class CurriculumBadmintonEnv(gym.Env):
             "r_racket_tip_mse": float(racket_tip_mse),
             "r_racket_orient_mse": float(racket_orient_mse),
             "r_racket_cost": float(racket_cost),
+            "r_racket_cost_raw": float(racket_cost_raw),
             "r_racket_pure": float(r_racket_pure),
             "r_racket_track_part": float(r_racket_track_part),
             "r_racket_balance_part": float(r_racket_balance_part),
