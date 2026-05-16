@@ -526,26 +526,28 @@ class CurriculumBadmintonEnv(gym.Env):
                 foot_over = max(0.0, max(foot_zs) - foot_limit)
                 foot_penalty = self.foot_height_penalty * foot_over
 
+        contact_h = 0.15
         foot_raw_slip = 0.0
         foot_contact_count = 0.0
+        foot_zs: List[float] = []
 
         if self.foot_bids:
-            self._set_ref_state(tqpos, tqvel)
             for foot_bid in self.foot_bids:
-                curr_z = float(self.data.xpos[foot_bid, 2])
-                ref_z = float(self.ref_data.xpos[foot_bid, 2])
-                ref_contact = ref_z < 0.08
-                curr_near_ground = curr_z < 0.12
+                foot_z = float(self.data.xpos[foot_bid, 2])
+                foot_xy_vel = self.data.cvel[foot_bid, 3:5]
+                foot_zs.append(foot_z)
 
-                if ref_contact and curr_near_ground:
-                    foot_xy_vel = self.data.cvel[foot_bid, 3:5]
+                if foot_z < contact_h:
                     foot_raw_slip += float(np.sum(foot_xy_vel ** 2))
                     foot_contact_count += 1.0
+
+        foot_min_z = float(np.min(foot_zs)) if foot_zs else 0.0
+        foot_mean_z = float(np.mean(foot_zs)) if foot_zs else 0.0
 
         foot_slip_cost = self.foot_slip_penalty * foot_raw_slip
 
         upright_bonus = self.upright_bonus if upright else 0.0
-        r_balance = (
+        r_balance_base = (
             w.root_height_w * r_root_h
             + w.com_w * r_com
             + alive
@@ -555,18 +557,8 @@ class CurriculumBadmintonEnv(gym.Env):
             - vel_cost
             - foot_penalty
             - low_pose_cost
-            - foot_slip_cost
         )
-
-        # Tracking terms.
-        qpos_diff = np.zeros(self.model.nv, dtype=np.float64)
-        mujoco.mj_differentiatePos(
-            self.model,
-            qpos_diff,
-            1.0,
-            tqpos,
-            self.data.qpos,
-        )
+        r_balance = r_balance_base - foot_slip_cost
 
         # freejoint: qpos has 7 dims, qvel/differentiate result has 6 root dims
         qpos_diff = np.zeros(self.model.nv, dtype=np.float64)
@@ -642,7 +634,7 @@ class CurriculumBadmintonEnv(gym.Env):
             body_pos_err = float(np.mean(errs))
             r_body_pos = float(np.exp(-3.0 * body_pos_err))
 
-            debug_enabled = os.environ.get("KINTWIN_BODY_POS_DEBUG", "1") != "0"
+            debug_enabled = os.environ.get("KINTWIN_BODY_POS_DEBUG", "0") != "0"
             debug_every = int(
                 os.environ.get(
                     "KINTWIN_BODY_POS_DEBUG_EVERY",
@@ -774,21 +766,32 @@ class CurriculumBadmintonEnv(gym.Env):
         # r_racket = w.racket_tip_w * r_racket_tip + w.racket_orient_w * r_racket_orient + 0.10 * r_track
         tip_w = max(float(w.racket_tip_w), 0.0)
         orient_w = max(float(w.racket_orient_w), 0.0)
+
         task_den = max(tip_w + orient_w, 1e-6)
-        r_racket_task = (tip_w * r_racket_tip + orient_w * r_racket_orient) / task_den
-        r_racket_pure = r_racket_task
+
+        # normalized racket task score, roughly 0~1
+        r_racket_task = (
+            tip_w * r_racket_tip
+            + orient_w * r_racket_orient
+        ) / task_den
+
         r_racket_track_part = 0.55 * r_pose
+        r_racket_task_part = 0.30 * r_racket_task
         r_racket_balance_part = 0.15 * r_balance_norm
+
         r_racket = (
             r_racket_track_part
-            + 0.30 * r_racket_task
+            + r_racket_task_part
             + r_racket_balance_part
         )
+
+        # for logging
+        r_racket_pure = r_racket_task
         if not upright:
             r_racket *= self.upright_track_scale
 
         if self.stage == "balance":
-            reward = r_balance
+            reward = r_balance_norm
         elif self.stage == "track":
             reward = r_track
         elif self.stage == "racket":
@@ -823,10 +826,11 @@ class CurriculumBadmintonEnv(gym.Env):
             "r_foot_raw_slip": float(foot_raw_slip),
             "r_foot_slip_cost": float(foot_slip_cost),
             "r_foot_contact_count": float(foot_contact_count),
+            "r_foot_min_z": float(foot_min_z),
+            "r_foot_mean_z": float(foot_mean_z),
             "r_foot_over": float(foot_over),
             "r_low_pose_err": float(low_pose_err),
             "r_low_pose_cost": float(low_pose_cost),
-            "r_foot_slip_cost": float(foot_slip_cost),
             "r_action_delta_cost": float(action_delta_cost),
             "r_pose": float(r_pose),
             "r_track_balance_part": float(r_track_balance_part),

@@ -35,7 +35,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--out_h5", type=str, required=True, help="Output HDF5 path")
     p.add_argument("--hdf5_dir", type=str, default="kintwin/humenv_amass")
     p.add_argument("--xml_path", type=str, default="humenv/assets/robot.xml")
-    p.add_argument("--npz_dir", type=str, default="data_preparation/AMASS/datasets/NewRacket")
     p.add_argument("--stage", type=str, default="racket", choices=["balance", "track", "racket"])
     p.add_argument("--fixed_clip", type=str, default="", help="Force rollout to sample this clip name")
     p.add_argument("--fixed_start_idx", type=int, default=-1, help="If >=0, force clip start index")
@@ -113,9 +112,6 @@ def main() -> None:
     if not hdf5_dir.is_dir():
         raise FileNotFoundError(f"HDF5 directory not found: {args.hdf5_dir}")
 
-    npz_dir = _resolve_path(args.npz_dir, expect_dir=True)
-    if not npz_dir.is_dir():
-        raise FileNotFoundError(f"NPZ directory not found: {args.npz_dir}")
 
     out_h5 = Path(args.out_h5)
     out_h5.parent.mkdir(parents=True, exist_ok=True)
@@ -124,7 +120,6 @@ def main() -> None:
         hdf5_dir=str(hdf5_dir),
         stage=args.stage,
         xml_path=str(xml_path),
-        npz_dir=str(npz_dir),
         episode_length=args.episode_length,
         seed=args.seed,
         racket_mass_scale=args.racket_mass_scale,
@@ -166,7 +161,8 @@ def main() -> None:
                 env.t = 0
                 idx0 = env._target_index()
                 env.base_env.reset(options={"qpos": env.clip_qpos[idx0], "qvel": env.clip_qvel[idx0]})
-                obs_local = env.base_env.get_obs()["proprio"]
+                env.prev_action = np.zeros(env.action_space.shape, dtype=np.float64)
+                obs_local = env._get_obs()
                 info_local = {
                     "clip": env.clip_name,
                     "start_idx": env.start_idx,
@@ -190,7 +186,6 @@ def main() -> None:
     clip_seq: List[str] = []
     racket_tip_curr_seq: List[np.ndarray] = []
     racket_tip_ref_seq: List[np.ndarray] = []
-    racket_tip_npz_seq: List[np.ndarray] = []
     racket_tip_fk_seq: List[np.ndarray] = []
 
     def _append_frame(
@@ -202,7 +197,6 @@ def main() -> None:
         clip: str,
         racket_tip_curr: np.ndarray,
         racket_tip_ref: np.ndarray,
-        racket_tip_npz: np.ndarray,
         racket_tip_fk: np.ndarray,
     ) -> None:
         qpos_seq.append(np.asarray(qpos, dtype=np.float64).copy())
@@ -215,26 +209,14 @@ def main() -> None:
         clip_seq.append(str(clip))
         racket_tip_curr_seq.append(np.asarray(racket_tip_curr, dtype=np.float64).copy())
         racket_tip_ref_seq.append(np.asarray(racket_tip_ref, dtype=np.float64).copy())
-        racket_tip_npz_seq.append(np.asarray(racket_tip_npz, dtype=np.float64).copy())
         racket_tip_fk_seq.append(np.asarray(racket_tip_fk, dtype=np.float64).copy())
 
     sampled_steps = 0
     max_sampled_steps = max(args.steps * args.max_sample_factor, args.steps)
     while len(qpos_seq) < args.steps and sampled_steps < max_sampled_steps:
         sampled_steps += 1
-        tidx = env._target_index()
-        tqpos = env.clip_qpos[tidx]
-        tqvel = env.clip_qvel[tidx]
-        env._set_ref_state(tqpos, tqvel)
         action, _ = model.predict(obs, deterministic=args.deterministic)
         obs, reward, terminated, truncated, info = env.step(action)
-
-        npz_tip = None
-        if env.clip_racket_tip is not None:
-            ridx = min(tidx, len(env.clip_racket_tip) - 1)
-            npz_tip = env.clip_racket_tip[ridx].copy()
-            if env.racket_tip_offset is not None:
-                npz_tip = npz_tip + env.racket_tip_offset
 
         fk_ref_tip = None
         if env.racket_sid is not None:
@@ -257,8 +239,6 @@ def main() -> None:
 
         if ref_tip is None:
             ref_tip = np.full(3, np.nan, dtype=np.float64)
-        if npz_tip is None:
-            npz_tip = np.full(3, np.nan, dtype=np.float64)
         if fk_ref_tip is None:
             fk_ref_tip = np.full(3, np.nan, dtype=np.float64)
         if curr_tip is None:
@@ -288,7 +268,6 @@ def main() -> None:
                     info.get("clip", ""),
                     curr_tip,
                     ref_tip,
-                    npz_tip,
                     fk_ref_tip,
                 )
                 break
@@ -306,7 +285,6 @@ def main() -> None:
             info.get("clip", ""),
             curr_tip,
             ref_tip,
-            npz_tip,
             fk_ref_tip,
         )
 
@@ -330,24 +308,18 @@ def main() -> None:
     clips = np.asarray(clip_seq, dtype="S128")
     racket_tip_curr = np.stack(racket_tip_curr_seq, axis=0)
     racket_tip_ref = np.stack(racket_tip_ref_seq, axis=0)
-    racket_tip_npz = np.stack(racket_tip_npz_seq, axis=0)
     racket_tip_fk = np.stack(racket_tip_fk_seq, axis=0)
 
     print("\nTip alignment debug (first 10 frames):")
     max_debug = min(10, len(racket_tip_curr))
     for i in range(max_debug):
         curr = racket_tip_curr[i]
-        npz = racket_tip_npz[i]
         fk = racket_tip_fk[i]
-        err_curr_npz = float(np.linalg.norm(curr - npz))
-        err_npz_fk = float(np.linalg.norm(npz - fk))
         err_curr_fk = float(np.linalg.norm(curr - fk))
         curr_s = np.array2string(curr, precision=6, separator=", ")
-        npz_s = np.array2string(npz, precision=6, separator=", ")
         fk_s = np.array2string(fk, precision=6, separator=", ")
         print(
-            f"frame {i:03d} | curr {curr_s} | npz {npz_s} | fk {fk_s} | "
-            f"err_curr_npz {err_curr_npz:.6f} | err_npz_fk {err_npz_fk:.6f} | err_curr_fk {err_curr_fk:.6f}"
+            f"frame {i:03d} | curr {curr_s} | fk {fk_s} | err_curr_fk {err_curr_fk:.6f}"
         )
 
     with h5py.File(out_h5, "w") as hf:
@@ -369,7 +341,6 @@ def main() -> None:
         ep0.create_dataset("clip", data=clips, compression="gzip")
         ep0.create_dataset("racket_tip_curr", data=racket_tip_curr, compression="gzip")
         ep0.create_dataset("racket_tip_ref", data=racket_tip_ref, compression="gzip")
-        ep0.create_dataset("racket_tip_npz", data=racket_tip_npz, compression="gzip")
         ep0.create_dataset("racket_tip_fk", data=racket_tip_fk, compression="gzip")
 
     print(f"Saved rollout HDF5: {out_h5}")
