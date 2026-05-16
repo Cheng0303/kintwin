@@ -112,6 +112,7 @@ class CurriculumBadmintonEnv(gym.Env):
         foot_slip_penalty: float = 0.0,
         body_pos_log_path: str = "",
         body_pos_debug_every: int = 10,
+        reward_mode: str = "exp",
     ) -> None:
         super().__init__()
         self.stage = stage
@@ -134,7 +135,7 @@ class CurriculumBadmintonEnv(gym.Env):
         self.foot_slip_penalty = float(foot_slip_penalty)
         self.body_pos_log_path = str(body_pos_log_path).strip()
         self.body_pos_debug_every = int(body_pos_debug_every)
-        
+        self.reward_mode = str(reward_mode)
 
         xml_p = Path(xml_path)
         if not xml_p.is_absolute():
@@ -574,8 +575,14 @@ class CurriculumBadmintonEnv(gym.Env):
         root_rot_err = float(np.linalg.norm(qpos_diff[3:6]))
         joint_err = float(np.mean(np.abs(qpos_diff[6:]))) if qpos_diff.shape[0] > 6 else 0.0
 
+        qpos_mse = float(np.mean(np.square(qpos_diff[6:]))) if qpos_diff.shape[0] > 6 else 0.0
+        qvel_diff = self.data.qvel - tqvel
+        qvel_mse = float(np.mean(np.square(qvel_diff)))
+        qvel_mse = float(np.clip(qvel_mse, 0.0, 10.0))
+        root_mse = (root_pos_err ** 2) + (root_rot_err ** 2)
+
         qpos_err = joint_err
-        qvel_err = float(np.mean(np.abs(self.data.qvel - tqvel)))
+        qvel_err = float(np.mean(np.abs(qvel_diff)))
         root_err = root_pos_err + 0.5 * root_rot_err
 
         r_qpos = float(np.exp(-4.0 * qpos_err))
@@ -585,6 +592,8 @@ class CurriculumBadmintonEnv(gym.Env):
 
         # Wrist endpoint tracking uses FK on target qpos/qvel.
         r_wrist = 0.0
+        wrist_err = 0.0
+        wrist_mse = 0.0
         has_wrists = self.lwrist_bid is not None and self.rwrist_bid is not None
         if has_wrists:
             self._set_ref_state(tqpos, tqvel)
@@ -609,10 +618,12 @@ class CurriculumBadmintonEnv(gym.Env):
                 np.linalg.norm(l_curr_local - l_ref_local)
                 + np.linalg.norm(r_curr_local - r_ref_local)
             )
+            wrist_mse = wrist_err ** 2
             r_wrist = float(np.exp(-10.0 * wrist_err))
 
         r_body_pos = 0.0
         body_pos_err = 0.0
+        body_pos_mse = 0.0
         if self.pelvis_bid is not None and self.track_bids:
             self._set_ref_state(tqpos, tqvel)
             root_curr = self.data.xpos[self.pelvis_bid].copy()
@@ -622,6 +633,7 @@ class CurriculumBadmintonEnv(gym.Env):
             R_ref = self.ref_data.xmat[self.pelvis_bid].reshape(3, 3).copy()
 
             errs = []
+            mses = []
             for bid in self.track_bids:
                 p_curr = self.data.xpos[bid].copy()
                 p_ref = self.ref_data.xpos[bid].copy()
@@ -629,9 +641,12 @@ class CurriculumBadmintonEnv(gym.Env):
                 p_curr_local = R_curr.T @ (p_curr - root_curr)
                 p_ref_local = R_ref.T @ (p_ref - root_ref)
 
-                errs.append(np.linalg.norm(p_curr_local - p_ref_local))
+                diff = p_curr_local - p_ref_local
+                errs.append(np.linalg.norm(diff))
+                mses.append(float(np.sum(diff ** 2)))
 
             body_pos_err = float(np.mean(errs))
+            body_pos_mse = float(np.mean(mses))
             r_body_pos = float(np.exp(-3.0 * body_pos_err))
 
             debug_enabled = os.environ.get("KINTWIN_BODY_POS_DEBUG", "0") != "0"
@@ -682,9 +697,11 @@ class CurriculumBadmintonEnv(gym.Env):
                         pass
 
         r_upper_orient = 0.0
+        upper_orient_mse = 0.0
         if self.orient_bids:
             self._set_ref_state(tqpos, tqvel)
             orient_rewards = []
+            orient_mses = []
             for bid in self.orient_bids:
                 R_curr = self.data.xmat[bid].reshape(3, 3).copy()
                 R_ref = self.ref_data.xmat[bid].reshape(3, 3).copy()
@@ -692,8 +709,10 @@ class CurriculumBadmintonEnv(gym.Env):
                 R_rel = R_curr.T @ R_ref
                 cos_angle = float(np.clip((np.trace(R_rel) - 1.0) / 2.0, -1.0, 1.0))
                 orient_rewards.append(0.5 * (cos_angle + 1.0))
+                orient_mses.append(float(np.arccos(cos_angle) ** 2))
 
             r_upper_orient = float(np.mean(orient_rewards))
+            upper_orient_mse = float(np.mean(orient_mses))
 
         pose_num = (
             3.0 * r_body_pos
@@ -731,6 +750,8 @@ class CurriculumBadmintonEnv(gym.Env):
         r_racket_tip = 0.0
         r_racket_orient = 0.0
         racket_tip_err = 0.0
+        racket_tip_mse = 0.0
+        racket_orient_mse = 0.0
 
         r_racket_pure = 0.0
         r_racket_task = 0.0
@@ -758,6 +779,7 @@ class CurriculumBadmintonEnv(gym.Env):
                 tip_err = float(np.linalg.norm(tip_curr - tip_ref))
 
                 racket_tip_err = tip_err
+                racket_tip_mse = tip_err ** 2
                 r_racket_tip = float(np.exp(-tip_scale * tip_err))
 
             if self.racket_bid is not None:
@@ -768,6 +790,7 @@ class CurriculumBadmintonEnv(gym.Env):
 
                 dot = float(np.clip(np.dot(shaft_curr, shaft_ref), -1.0, 1.0))
                 r_racket_orient = 0.5 * (dot + 1.0)
+                racket_orient_mse = float(np.arccos(dot) ** 2)
         # r_racket = w.racket_tip_w * r_racket_tip + w.racket_orient_w * r_racket_orient + 0.10 * r_track
         tip_w = max(float(w.racket_tip_w), 0.0)
         orient_w = max(float(w.racket_orient_w), 0.0)
@@ -795,12 +818,30 @@ class CurriculumBadmintonEnv(gym.Env):
         if not upright:
             r_racket *= self.upright_track_scale
 
+        pose_cost = (
+            0.55 * qpos_mse
+            + 0.20 * qvel_mse
+            + 0.15 * root_mse
+            + 0.10 * wrist_mse
+        )
+        r_track_mse = 0.80 + 0.20 * r_balance_base_norm - pose_cost
+
+        racket_cost = (
+            0.6 * body_pos_mse
+            + 0.4 * upper_orient_mse
+            + 1.5 * racket_tip_mse
+            + 0.5 * racket_orient_mse
+        )
+        r_racket_mse = 0.80 + 0.20 * r_balance_base_norm - (pose_cost + racket_cost)
+
+        reward_mode_mse = self.reward_mode == "mse_hybrid"
+
         if self.stage == "balance":
             reward_before_slip = r_balance_base_norm
         elif self.stage == "track":
-            reward_before_slip = r_track
+            reward_before_slip = r_track_mse if reward_mode_mse else r_track
         elif self.stage == "racket":
-            reward_before_slip = r_racket
+            reward_before_slip = r_racket_mse if reward_mode_mse else r_racket
         else:
             raise ValueError(f"Unknown stage: {self.stage}")
 
@@ -811,6 +852,9 @@ class CurriculumBadmintonEnv(gym.Env):
             "r_balance": float(r_balance),
             "r_track": float(r_track),
             "r_racket": float(r_racket),
+            "r_track_mse": float(r_track_mse),
+            "r_racket_mse": float(r_racket_mse),
+            "r_reward_mode_mse": 1.0 if reward_mode_mse else 0.0,
             "r_balance_norm": float(r_balance_norm),
             "r_balance_base": float(r_balance_base),
             "r_balance_base_norm": float(r_balance_base_norm),
@@ -823,10 +867,20 @@ class CurriculumBadmintonEnv(gym.Env):
             "r_body_pos": float(r_body_pos),
             "r_body_pos_err": float(body_pos_err),
             "r_upper_orient": float(r_upper_orient),
+            "r_pose_cost": float(pose_cost),
+            "r_qpos_mse": float(qpos_mse),
+            "r_qvel_mse": float(qvel_mse),
+            "r_root_mse": float(root_mse),
+            "r_wrist_mse": float(wrist_mse),
+            "r_body_pos_mse": float(body_pos_mse),
+            "r_upper_orient_mse": float(upper_orient_mse),
 
             "r_racket_tip": float(r_racket_tip),
             "r_racket_orient": float(r_racket_orient),
             "r_racket_tip_err": float(racket_tip_err),
+            "r_racket_tip_mse": float(racket_tip_mse),
+            "r_racket_orient_mse": float(racket_orient_mse),
+            "r_racket_cost": float(racket_cost),
             "r_racket_pure": float(r_racket_pure),
             "r_racket_track_part": float(r_racket_track_part),
             "r_racket_balance_part": float(r_racket_balance_part),
@@ -903,6 +957,7 @@ def build_vec_env(
     upright_penalty_scale: float,
     body_pos_log_path: str = "",
     body_pos_debug_every: int = 10,
+    reward_mode: str = "exp",
 ) -> DummyVecEnv:
     def _make(rank: int):
         def _thunk():
@@ -932,6 +987,7 @@ def build_vec_env(
                 upright_penalty_scale=upright_penalty_scale,
                 body_pos_log_path=body_pos_log_path,
                 body_pos_debug_every=body_pos_debug_every,
+                reward_mode=reward_mode,
             )
 
         return _thunk
@@ -971,6 +1027,7 @@ def train_stage(
     init_model: str = "",
     body_pos_log_path: str = "",
     body_pos_debug_every: int = 10,
+    reward_mode: str = "exp",
 ) -> PPO:
     if not body_pos_log_path:
         body_pos_log_path = str(save_dir / f"body_pos_debug_{stage}.log")
@@ -1001,6 +1058,7 @@ def train_stage(
         upright_penalty_scale,
         body_pos_log_path,
         body_pos_debug_every,
+        reward_mode,
     )
 
     if model is None:
@@ -1085,6 +1143,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--upright_track_scale", type=float, default=1.0)
     parser.add_argument("--upright_penalty_scale", type=float, default=1.0)
     parser.add_argument("--body_pos_debug_every", type=int, default=10)
+    parser.add_argument(
+        "--reward_mode",
+        type=str,
+        default="exp",
+        choices=["exp", "mse_hybrid"],
+    )
 
     # Curriculum stages (set 0 to skip a stage)
     parser.add_argument("--balance_steps", type=int, default=1_000_000)
@@ -1161,6 +1225,7 @@ def main() -> None:
             upright_penalty_scale=args.upright_penalty_scale,
             init_model=init_model_path,
             body_pos_debug_every=args.body_pos_debug_every,
+            reward_mode=args.reward_mode,
         )
         # Only use init_model for the first executed stage.
         init_model_path = ""

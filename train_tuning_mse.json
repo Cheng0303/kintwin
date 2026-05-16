@@ -1,0 +1,36 @@
+{
+  "default_profile": "recommended_v1_mse",
+  "common": {
+    "hdf5_dir": "kintwin/humenv_amass",
+    "xml_path": "humenv/assets/robot.xml",
+    "npz_dir": "data_preparation/AMASS/datasets/NewRacket",
+    "save_dir": "kintwin/models_curriculum",
+    "episode_length": 300,
+    "seed": 42,
+    "device": "auto",
+    "racket_mass_scale": 1.0,
+    "racket_body_name": "Racket",
+    "control_penalty": 0.012,
+    "vel_penalty": 0.003,
+    "alive_bonus": 0.2,
+    "root_height_w": 0.35,
+    "com_w": 0.35,
+    "qpos_track_w": 0.42,
+    "qvel_track_w": 0.20,
+    "root_track_w": 0.30,
+    "wrist_track_w": 0.28,
+    "racket_tip_w": 0.10,
+    "racket_orient_w": 0.06,
+    "racket_tip_err_scale": 12.0,
+    "low_pose_margin": -1.0,
+    "low_pose_penalty": 0.0,
+    "foot_slip_penalty": 0.0
+  },
+  "profiles": {
+    "recommended_v1_mse": {
+      "save_dir": "kintwin/models_recommended_v1_mse",
+      "init_model": "",
+      "reward_mode": "mse_hybrid"
+    }
+  }
+}
