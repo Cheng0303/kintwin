@@ -717,9 +717,14 @@ class CurriculumBadmintonEnv(gym.Env):
             w.root_height_w + w.com_w + w.alive_bonus + self.upright_bonus,
             1e-6,
         )
+
+        # 用於 reward 組合的 balance，不含 foot slip，避免 foot_slip 被 normalize 吃掉
+        r_balance_base_norm = float(np.clip(r_balance_base / balance_den, -1.0, 1.0))
+
+        # 純 logging 用：含 foot slip 後的 balance
         r_balance_norm = float(np.clip(r_balance / balance_den, -1.0, 1.0))
 
-        r_track_balance_part = 0.15 * r_balance_norm
+        r_track_balance_part = 0.15 * r_balance_base_norm
         r_track = 0.85 * r_pose + r_track_balance_part
 
         # Racket integration (optional if model includes racket body/site).
@@ -777,7 +782,7 @@ class CurriculumBadmintonEnv(gym.Env):
 
         r_racket_track_part = 0.55 * r_pose
         r_racket_task_part = 0.30 * r_racket_task
-        r_racket_balance_part = 0.15 * r_balance_norm
+        r_racket_balance_part = 0.15 * r_balance_base_norm
 
         r_racket = (
             r_racket_track_part
@@ -791,19 +796,25 @@ class CurriculumBadmintonEnv(gym.Env):
             r_racket *= self.upright_track_scale
 
         if self.stage == "balance":
-            reward = r_balance_norm
+            reward_before_slip = r_balance_base_norm
         elif self.stage == "track":
-            reward = r_track
+            reward_before_slip = r_track
         elif self.stage == "racket":
-            reward = r_racket
+            reward_before_slip = r_racket
         else:
             raise ValueError(f"Unknown stage: {self.stage}")
+
+        # foot slip 直接扣 final reward，避免只藏在 balance 裡被稀釋
+        reward = reward_before_slip - foot_slip_cost
 
         terms = {
             "r_balance": float(r_balance),
             "r_track": float(r_track),
             "r_racket": float(r_racket),
             "r_balance_norm": float(r_balance_norm),
+            "r_balance_base": float(r_balance_base),
+            "r_balance_base_norm": float(r_balance_base_norm),
+            "r_reward_before_slip": float(reward_before_slip),
 
             "r_qpos": float(r_qpos),
             "r_qvel": float(r_qvel),
