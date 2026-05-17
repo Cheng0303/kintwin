@@ -167,6 +167,7 @@ class CurriculumBadmintonEnv(gym.Env):
         self.action_space = self.base_env.action_space
         self.future_offsets = [1, 3, 5, 10, 20]
         self.prev_action = np.zeros(self.action_space.shape, dtype=np.float64)
+        self.prev_prev_action = np.zeros(self.action_space.shape, dtype=np.float64)
 
         self.weights = RewardWeights(**(reward_weights or {}))
 
@@ -469,6 +470,7 @@ class CurriculumBadmintonEnv(gym.Env):
         self.start_idx = int(self.rng.integers(0, max_start + 1)) if max_start > 0 else 0
         self.t = 0
         self.prev_action = np.zeros(self.action_space.shape, dtype=np.float64)
+        self.prev_prev_action = np.zeros(self.action_space.shape, dtype=np.float64)
 
         # Start from reference pose for easier stabilization and faster curriculum convergence.
         idx0 = self._target_index()
@@ -499,6 +501,7 @@ class CurriculumBadmintonEnv(gym.Env):
             try:
                 self.base_env.reset(options={"qpos": tqpos, "qvel": tqvel})
                 self.prev_action = np.zeros(self.action_space.shape, dtype=np.float64)
+                self.prev_prev_action = np.zeros(self.action_space.shape, dtype=np.float64)
                 obs = self._get_obs()
             except Exception:
                 obs, _ = self.reset()
@@ -515,6 +518,7 @@ class CurriculumBadmintonEnv(gym.Env):
             return obs, -10.0, True, False, info
 
         reward, terms = self._compute_reward(tqpos=tqpos, tqvel=tqvel, action=action, tidx=tidx)
+        self.prev_prev_action = self.prev_action.copy()
         self.prev_action = np.asarray(action, dtype=np.float64)
 
         self.t += 1
@@ -573,6 +577,9 @@ class CurriculumBadmintonEnv(gym.Env):
         penalty_scale = self.upright_penalty_scale if upright else 0.0
         control_cost = penalty_scale * w.control_penalty * float(np.mean(np.square(action)))
         action_delta_cost = 0.003 * float(np.mean(np.square(action - self.prev_action)))
+        action_accel_cost = 0.002 * float(
+            np.mean(np.square(action - 2.0 * self.prev_action + self.prev_prev_action))
+        )
         vel_cost = penalty_scale * w.vel_penalty * float(np.mean(np.square(self.data.qvel)))
         alive = w.alive_bonus
 
@@ -636,6 +643,7 @@ class CurriculumBadmintonEnv(gym.Env):
             + upright_bonus
             - control_cost
             - action_delta_cost
+            - action_accel_cost
             - vel_cost
             - foot_penalty
             - low_pose_cost
@@ -952,12 +960,11 @@ class CurriculumBadmintonEnv(gym.Env):
         )
         swing_vel_cost = float(np.clip(swing_vel_cost_raw, 0.0, 0.20))
 
-        r_racket_mse = (
-            0.70 * r_track_mse
-            + 0.25 * r_balance_base_norm
-            + 0.15 * r_racket_task
-            - racket_cost
-            - 0.70 * swing_vel_cost
+        r_track_mse = (
+            1.00
+            + 0.30 * r_balance_base_norm
+            - pose_cost
+            - 0.20 * swing_vel_cost
         )
 
         racket_cost_raw = (
@@ -971,7 +978,7 @@ class CurriculumBadmintonEnv(gym.Env):
             + 0.25 * r_balance_base_norm
             + 0.15 * r_racket_task
             - racket_cost
-            - swing_vel_cost
+            - 0.50 * swing_vel_cost
         )
 
         reward_mode_mse = self.reward_mode == "mse_hybrid"
@@ -1045,6 +1052,7 @@ class CurriculumBadmintonEnv(gym.Env):
             "r_low_pose_err": float(low_pose_err),
             "r_low_pose_cost": float(low_pose_cost),
             "r_action_delta_cost": float(action_delta_cost),
+            "r_action_accel_cost": float(action_accel_cost),
             "r_pose": float(r_pose),
             "r_track_balance_part": float(r_track_balance_part),
         }
