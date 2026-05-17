@@ -289,6 +289,18 @@ class CurriculumBadmintonEnv(gym.Env):
                 return idx
         return None
 
+    def _site_linear_velocity(self, data: mujoco.MjData, site_id: int) -> np.ndarray:
+        jacp = np.zeros((3, self.model.nv), dtype=np.float64)
+        jacr = np.zeros((3, self.model.nv), dtype=np.float64)
+        mujoco.mj_jacSite(self.model, data, jacp, jacr, site_id)
+        return jacp @ data.qvel
+
+    def _body_linear_velocity(self, data: mujoco.MjData, body_id: int) -> np.ndarray:
+        jacp = np.zeros((3, self.model.nv), dtype=np.float64)
+        jacr = np.zeros((3, self.model.nv), dtype=np.float64)
+        mujoco.mj_jacBody(self.model, data, jacp, jacr, body_id)
+        return jacp @ data.qvel
+
     def _sample_clip(self) -> Tuple[np.ndarray, np.ndarray, str]:
         f = self.files[self.rng.integers(0, len(self.files))]
         with h5py.File(f, "r") as hf:
@@ -579,7 +591,7 @@ class CurriculumBadmintonEnv(gym.Env):
         qvel_diff = self.data.qvel - tqvel
         qvel_mse = float(np.mean(np.square(qvel_diff)))
         qvel_mse = float(np.clip(qvel_mse, 0.0, 10.0))
-        root_mse = (root_pos_err ** 2) + (root_rot_err ** 2)
+        root_mse = (root_pos_err ** 2) + 0.25 * (root_rot_err ** 2)
 
         qpos_err = joint_err
         qvel_err = float(np.mean(np.abs(qvel_diff)))
@@ -815,22 +827,41 @@ class CurriculumBadmintonEnv(gym.Env):
 
         # for logging
         r_racket_pure = r_racket_task
+
+        posture_cost = 0.0
+
         if not upright:
             r_racket *= self.upright_track_scale
 
-        pose_cost_raw = (
+        if not upright:
+            posture_cost += 0.35
+
+            if self.torso_bid is not None:
+                torso_xmat = self.data.xmat[self.torso_bid].reshape(3, 3)
+                torso_up_cos = float(torso_xmat[2, 2])
+                posture_cost += 0.80 * max(0.0, 0.82 - torso_up_cos) ** 2
+
+            if self.head_bid is not None and self.pelvis_bid is not None:
+                head_h = float(self.data.xpos[self.head_bid, 2])
+                pelvis_h = float(self.data.xpos[self.pelvis_bid, 2])
+                posture_cost += 0.40 * max(0.0, 0.45 - (head_h - pelvis_h)) ** 2
+
+        pose_core_cost_raw = (
             4.0 * body_pos_mse
-            + 0.30 * upper_orient_mse
+            + 0.45 * upper_orient_mse
             + 0.25 * qpos_mse
             + 0.03 * qvel_mse
             + 0.50 * root_mse
             + 0.30 * wrist_mse
         )
-        pose_cost = float(np.clip(pose_cost_raw, 0.0, 2.0))
+
+        pose_core_cost = float(np.clip(pose_core_cost_raw, 0.0, 2.0))
+
+        pose_cost = pose_core_cost + posture_cost
 
         r_track_mse = (
             1.00
-            + 0.20 * r_balance_base_norm
+            + 0.30 * r_balance_base_norm
             - pose_cost
         )
 
@@ -842,9 +873,10 @@ class CurriculumBadmintonEnv(gym.Env):
 
         r_racket_mse = (
             0.70 * r_track_mse
-            + 0.15 * r_balance_base_norm
+            + 0.25 * r_balance_base_norm
             + 0.15 * r_racket_task
             - racket_cost
+            - swing_vel_cost
         )
 
         reward_mode_mse = self.reward_mode == "mse_hybrid"
@@ -882,10 +914,16 @@ class CurriculumBadmintonEnv(gym.Env):
             "r_upper_orient": float(r_upper_orient),
             "r_pose_cost": float(pose_cost),
             "r_pose_cost_raw": float(pose_cost_raw),
+            "r_pose_core_cost": float(pose_core_cost),
+            "r_pose_core_cost_raw": float(pose_core_cost_raw),
+            "r_posture_cost": float(posture_cost),
+            "r_swing_vel_cost": float(swing_vel_cost),
+            "r_swing_vel_cost_raw": float(swing_vel_cost_raw),
             "r_qpos_mse": float(qpos_mse),
             "r_qvel_mse": float(qvel_mse),
             "r_root_mse": float(root_mse),
             "r_wrist_mse": float(wrist_mse),
+            "r_wrist_vel_mse": float(wrist_vel_mse),
             "r_body_pos_mse": float(body_pos_mse),
             "r_upper_orient_mse": float(upper_orient_mse),
 
@@ -894,6 +932,7 @@ class CurriculumBadmintonEnv(gym.Env):
             "r_racket_tip_err": float(racket_tip_err),
             "r_racket_tip_mse": float(racket_tip_mse),
             "r_racket_orient_mse": float(racket_orient_mse),
+            "r_racket_tip_vel_mse": float(racket_tip_vel_mse),
             "r_racket_cost": float(racket_cost),
             "r_racket_cost_raw": float(racket_cost_raw),
             "r_racket_pure": float(r_racket_pure),
