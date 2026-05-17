@@ -165,7 +165,7 @@ class CurriculumBadmintonEnv(gym.Env):
         self.ref_data = mujoco.MjData(self.model)
 
         self.action_space = self.base_env.action_space
-        self.future_offsets = [1, 5, 10]
+        self.future_offsets = [1, 3, 5, 10, 20]
         self.prev_action = np.zeros(self.action_space.shape, dtype=np.float64)
 
         self.weights = RewardWeights(**(reward_weights or {}))
@@ -235,14 +235,11 @@ class CurriculumBadmintonEnv(gym.Env):
         self.racket_sid = self._find_site_id(["racket_tip", "RacketTip", "racket_site"])
         self.racket_bid = self._find_body_id([racket_body_name, "racket", "Racket"])
 
-        proprio_dim = int(self.base_env.get_obs()["proprio"].shape[0])
-        per_future_dim = self.model.nv + self.model.nv + 6 + 3
-        goal_dim = len(self.future_offsets) * per_future_dim
-        prev_action_dim = int(np.prod(self.action_space.shape))
+        dummy_obs = self._get_obs()
         self.observation_space = gym.spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(proprio_dim + goal_dim + prev_action_dim,),
+            shape=dummy_obs.shape,
             dtype=np.float32,
         )
 
@@ -329,10 +326,36 @@ class CurriculumBadmintonEnv(gym.Env):
     def _get_obs(self) -> np.ndarray:
         proprio = self.base_env.get_obs()["proprio"].astype(np.float64)
 
+        phase = 0.0
+        if self.clip_qpos is not None and len(self.clip_qpos) > 1:
+            phase = float(
+                (self.start_idx + self.t * self.track_stride)
+                / max(len(self.clip_qpos) - 1, 1)
+            )
+        phase = float(np.clip(phase, 0.0, 1.0))
+        phase_feat = np.array(
+            [
+                np.sin(2.0 * np.pi * phase),
+                np.cos(2.0 * np.pi * phase),
+            ],
+            dtype=np.float64,
+        )
+
         if self.clip_qpos is None or self.clip_qvel is None:
-            goal_dim = len(self.future_offsets) * (2 * self.model.nv + 6 + 3)
+            per_offset_dim = (
+                2 * self.model.nv
+                + 6
+                + 3
+                + 15
+                + 3
+                + 3
+                + 3
+            )
+            goal_dim = len(self.future_offsets) * per_offset_dim
             goal_zeros = np.zeros(goal_dim, dtype=np.float64)
-            return np.concatenate([proprio, goal_zeros, self.prev_action.ravel()]).astype(np.float32)
+            return np.concatenate(
+                [proprio, np.zeros(2, dtype=np.float64), goal_zeros, self.prev_action.ravel()]
+            ).astype(np.float32)
 
         goal_parts: List[np.ndarray] = []
         for off in self.future_offsets:
@@ -356,11 +379,14 @@ class CurriculumBadmintonEnv(gym.Env):
 
             self._set_ref_state(tqpos, tqvel)
 
-            wrist_delta = np.zeros(6, dtype=np.float64)
+            root_curr = None
+            R_curr = None
             if self.pelvis_bid is not None:
                 root_curr = self.data.xpos[self.pelvis_bid].copy()
                 R_curr = self.data.xmat[self.pelvis_bid].reshape(3, 3).copy()
 
+            wrist_delta = np.zeros(6, dtype=np.float64)
+            if R_curr is not None:
                 if self.lwrist_bid is not None:
                     wrist_delta[:3] = R_curr.T @ (
                         self.ref_data.xpos[self.lwrist_bid] - self.data.xpos[self.lwrist_bid]
@@ -372,8 +398,8 @@ class CurriculumBadmintonEnv(gym.Env):
             wrist_delta = np.clip(wrist_delta, -2.0, 2.0)
 
             racket_delta = np.zeros(3, dtype=np.float64)
-            if self.pelvis_bid is not None:
-                R_curr = self.data.xmat[self.pelvis_bid].reshape(3, 3).copy()
+            racket_tip_traj_delta = np.zeros(3, dtype=np.float64)
+            if R_curr is not None:
                 tip_curr = None
                 if self.racket_sid is not None:
                     tip_curr = self.data.site_xpos[self.racket_sid].copy()
@@ -385,11 +411,54 @@ class CurriculumBadmintonEnv(gym.Env):
                 tip_ref = self._get_ref_racket_tip()
                 if tip_curr is not None and tip_ref is not None:
                     racket_delta = R_curr.T @ (tip_ref - tip_curr)
+                    racket_tip_traj_delta = R_curr.T @ (tip_ref - tip_curr)
             racket_delta = np.clip(racket_delta, -2.0, 2.0)
+            racket_tip_traj_delta = np.clip(racket_tip_traj_delta, -2.0, 2.0)
 
-            goal_parts.extend([qpos_diff, qvel_diff, wrist_delta, racket_delta])
+            body_traj_parts = []
+            for bid in [self.pelvis_bid, self.torso_bid, self.head_bid, self.lwrist_bid, self.rwrist_bid]:
+                if bid is None or R_curr is None:
+                    body_traj_parts.append(np.zeros(3, dtype=np.float64))
+                    continue
+                delta = R_curr.T @ (self.ref_data.xpos[bid] - self.data.xpos[bid])
+                body_traj_parts.append(np.clip(delta, -2.0, 2.0))
+            body_traj_delta = np.concatenate(body_traj_parts) if body_traj_parts else np.zeros(15, dtype=np.float64)
 
-        return np.concatenate([proprio, *goal_parts, self.prev_action.ravel()]).astype(np.float32)
+            rwrist_vel_ref_local = np.zeros(3, dtype=np.float64)
+            if self.rwrist_bid is not None and R_curr is not None:
+                rwrist_vel_ref = self._body_linear_velocity(self.ref_data, self.rwrist_bid)
+                rwrist_vel_ref_local = R_curr.T @ rwrist_vel_ref
+            rwrist_vel_ref_local = np.clip(rwrist_vel_ref_local, -10.0, 10.0)
+
+            racket_tip_vel_ref_local = np.zeros(3, dtype=np.float64)
+            if R_curr is not None:
+                if self.racket_sid is not None:
+                    racket_tip_vel_ref = self._site_linear_velocity(self.ref_data, self.racket_sid)
+                elif self.racket_bid is not None:
+                    racket_tip_vel_ref = self._body_linear_velocity(self.ref_data, self.racket_bid)
+                elif self.rwrist_bid is not None:
+                    racket_tip_vel_ref = self._body_linear_velocity(self.ref_data, self.rwrist_bid)
+                else:
+                    racket_tip_vel_ref = None
+
+                if racket_tip_vel_ref is not None:
+                    racket_tip_vel_ref_local = R_curr.T @ racket_tip_vel_ref
+            racket_tip_vel_ref_local = np.clip(racket_tip_vel_ref_local, -10.0, 10.0)
+
+            goal_parts.extend(
+                [
+                    qpos_diff,
+                    qvel_diff,
+                    wrist_delta,
+                    racket_delta,
+                    body_traj_delta,
+                    rwrist_vel_ref_local,
+                    racket_tip_vel_ref_local,
+                    racket_tip_traj_delta,
+                ]
+            )
+
+        return np.concatenate([proprio, phase_feat, *goal_parts, self.prev_action.ravel()]).astype(np.float32)
 
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
         if seed is not None:
@@ -764,6 +833,8 @@ class CurriculumBadmintonEnv(gym.Env):
         racket_tip_err = 0.0
         racket_tip_mse = 0.0
         racket_orient_mse = 0.0
+        wrist_vel_mse = 0.0
+        racket_tip_vel_mse = 0.0
 
         r_racket_pure = 0.0
         r_racket_task = 0.0
@@ -828,23 +899,25 @@ class CurriculumBadmintonEnv(gym.Env):
         # for logging
         r_racket_pure = r_racket_task
 
-        posture_cost = 0.0
-
         if not upright:
             r_racket *= self.upright_track_scale
 
-        if not upright:
-            posture_cost += 0.35
+        if self.rwrist_bid is not None:
+            wrist_vel_curr = self._body_linear_velocity(self.data, self.rwrist_bid)
+            wrist_vel_ref = self._body_linear_velocity(self.ref_data, self.rwrist_bid)
+            wrist_vel_diff = np.clip(wrist_vel_curr - wrist_vel_ref, -10.0, 10.0)
+            wrist_vel_mse = float(np.mean(np.square(wrist_vel_diff)))
 
-            if self.torso_bid is not None:
-                torso_xmat = self.data.xmat[self.torso_bid].reshape(3, 3)
-                torso_up_cos = float(torso_xmat[2, 2])
-                posture_cost += 0.80 * max(0.0, 0.82 - torso_up_cos) ** 2
-
-            if self.head_bid is not None and self.pelvis_bid is not None:
-                head_h = float(self.data.xpos[self.head_bid, 2])
-                pelvis_h = float(self.data.xpos[self.pelvis_bid, 2])
-                posture_cost += 0.40 * max(0.0, 0.45 - (head_h - pelvis_h)) ** 2
+        if self.racket_sid is not None:
+            tip_vel_curr = self._site_linear_velocity(self.data, self.racket_sid)
+            tip_vel_ref = self._site_linear_velocity(self.ref_data, self.racket_sid)
+            tip_vel_diff = np.clip(tip_vel_curr - tip_vel_ref, -10.0, 10.0)
+            racket_tip_vel_mse = float(np.mean(np.square(tip_vel_diff)))
+        elif self.racket_bid is not None:
+            tip_vel_curr = self._body_linear_velocity(self.data, self.racket_bid)
+            tip_vel_ref = self._body_linear_velocity(self.ref_data, self.racket_bid)
+            tip_vel_diff = np.clip(tip_vel_curr - tip_vel_ref, -10.0, 10.0)
+            racket_tip_vel_mse = float(np.mean(np.square(tip_vel_diff)))
 
         pose_core_cost_raw = (
             4.0 * body_pos_mse
@@ -857,12 +930,34 @@ class CurriculumBadmintonEnv(gym.Env):
 
         pose_core_cost = float(np.clip(pose_core_cost_raw, 0.0, 2.0))
 
+        posture_cost = 0.0
+        if not upright:
+            posture_cost += 0.35
+
+        if self.torso_bid is not None:
+            torso_xmat = self.data.xmat[self.torso_bid].reshape(3, 3)
+            torso_up_cos = float(torso_xmat[2, 2])
+            posture_cost += 0.80 * max(0.0, 0.82 - torso_up_cos) ** 2
+
+        if self.head_bid is not None and self.pelvis_bid is not None:
+            head_h = float(self.data.xpos[self.head_bid, 2])
+            pelvis_h = float(self.data.xpos[self.pelvis_bid, 2])
+            posture_cost += 0.40 * max(0.0, 0.45 - (head_h - pelvis_h)) ** 2
+
         pose_cost = pose_core_cost + posture_cost
 
-        r_track_mse = (
-            1.00
-            + 0.30 * r_balance_base_norm
-            - pose_cost
+        swing_vel_cost_raw = (
+            0.010 * wrist_vel_mse
+            + 0.004 * racket_tip_vel_mse
+        )
+        swing_vel_cost = float(np.clip(swing_vel_cost_raw, 0.0, 0.20))
+
+        r_racket_mse = (
+            0.70 * r_track_mse
+            + 0.25 * r_balance_base_norm
+            + 0.15 * r_racket_task
+            - racket_cost
+            - 0.70 * swing_vel_cost
         )
 
         racket_cost_raw = (
@@ -913,7 +1008,6 @@ class CurriculumBadmintonEnv(gym.Env):
             "r_body_pos_err": float(body_pos_err),
             "r_upper_orient": float(r_upper_orient),
             "r_pose_cost": float(pose_cost),
-            "r_pose_cost_raw": float(pose_cost_raw),
             "r_pose_core_cost": float(pose_core_cost),
             "r_pose_core_cost_raw": float(pose_core_cost_raw),
             "r_posture_cost": float(posture_cost),
