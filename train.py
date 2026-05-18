@@ -1146,10 +1146,19 @@ class CurriculumBadmintonEnv(gym.Env):
             support_gate *= 0.6
         if knee_floor_contacts > 0:
             support_gate *= 0.3
-        if foot_contact_count < 0.5:
-            support_gate *= 0.4
-        elif foot_contact_count < 1.0:
-            support_gate *= 0.7
+        ref_foot_contact_count = 0.0
+        if self.foot_bids:
+            for foot_bid in self.foot_bids:
+                ref_foot_z = float(self.ref_data.xpos[foot_bid, 2])
+                if ref_foot_z < 0.15:
+                    ref_foot_contact_count += 1.0
+
+        foot_support_miss = (
+            ref_foot_contact_count >= 1.0
+            and foot_contact_count < 0.5
+        )
+        if foot_support_miss:
+            support_gate *= 0.2
         support_mult = 0.30 + 0.70 * support_gate
 
         r_track_mse_raw = (
@@ -1195,7 +1204,8 @@ class CurriculumBadmintonEnv(gym.Env):
             raise ValueError(f"Unknown stage: {self.stage}")
 
         # foot slip 直接扣 final reward，避免只藏在 balance 裡被稀釋
-        reward = reward_before_slip - foot_slip_cost
+        foot_support_cost = 0.8 if foot_support_miss else 0.0
+        reward = reward_before_slip - foot_slip_cost - foot_support_cost
 
         terms = {
             "r_balance": float(r_balance),
@@ -1207,6 +1217,9 @@ class CurriculumBadmintonEnv(gym.Env):
             "r_racket_mse_raw": float(r_racket_mse_raw),
             "r_support_gate": float(support_gate),
             "r_support_mult": float(support_mult),
+            "r_ref_foot_contact_count": float(ref_foot_contact_count),
+            "r_foot_support_miss": float(1.0 if foot_support_miss else 0.0),
+            "r_foot_support_cost": float(foot_support_cost),
             "r_reward_mode_mse": 1.0 if reward_mode_mse else 0.0,
             "r_balance_norm": float(r_balance_norm),
             "r_balance_base": float(r_balance_base),
