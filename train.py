@@ -1118,6 +1118,7 @@ class CurriculumBadmintonEnv(gym.Env):
             support_gate *= 0.5
         if r_upright < 0.06 and pelvis_foot_clearance < 0.65:
             support_gate *= 0.5
+        support_mult = 0.30 + 0.70 * support_gate
 
         r_track_mse_raw = (
             1.00
@@ -1125,7 +1126,11 @@ class CurriculumBadmintonEnv(gym.Env):
             - pose_cost
             - 0.20 * swing_vel_cost
         )
-        r_track_mse = 0.30 * r_track_mse_raw + 0.70 * support_gate * r_track_mse_raw
+        r_track_mse = (
+            support_mult * max(0.0, r_track_mse_raw)
+            + min(0.0, r_track_mse_raw)
+            - 0.20 * (1.0 - support_gate)
+        )
 
         racket_cost_raw = (
             0.12 * racket_tip_mse
@@ -1134,13 +1139,17 @@ class CurriculumBadmintonEnv(gym.Env):
         racket_cost = float(np.clip(racket_cost_raw, 0.0, 1.5))
 
         r_racket_mse_raw = (
-            0.65 * r_track_mse
+            0.65 * r_track_mse_raw
             + 0.35 * r_balance_base_norm
             + 0.15 * r_racket_task
             - racket_cost
             - 0.50 * swing_vel_cost
         )
-        r_racket_mse = 0.30 * r_racket_mse_raw + 0.70 * support_gate * r_racket_mse_raw
+        r_racket_mse = (
+            support_mult * max(0.0, r_racket_mse_raw)
+            + min(0.0, r_racket_mse_raw)
+            - 0.20 * (1.0 - support_gate)
+        )
 
         reward_mode_mse = self.reward_mode == "mse_hybrid"
 
@@ -1165,6 +1174,7 @@ class CurriculumBadmintonEnv(gym.Env):
             "r_racket_mse": float(r_racket_mse),
             "r_racket_mse_raw": float(r_racket_mse_raw),
             "r_support_gate": float(support_gate),
+            "r_support_mult": float(support_mult),
             "r_reward_mode_mse": 1.0 if reward_mode_mse else 0.0,
             "r_balance_norm": float(r_balance_norm),
             "r_balance_base": float(r_balance_base),
