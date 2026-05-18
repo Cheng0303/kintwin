@@ -168,6 +168,8 @@ class CurriculumBadmintonEnv(gym.Env):
         self.future_offsets = [1, 3, 5, 10, 20]
         self.prev_action = np.zeros(self.action_space.shape, dtype=np.float64)
         self.prev_prev_action = np.zeros(self.action_space.shape, dtype=np.float64)
+        self.knee_contact_frames = 0
+        self.crouch_frames = 0
 
         self.weights = RewardWeights(**(reward_weights or {}))
 
@@ -189,6 +191,38 @@ class CurriculumBadmintonEnv(gym.Env):
         self.lfoot_bid = self._find_body_id(["L_Foot", "left_foot", "l_foot", "LeftFoot", "L_Ankle"])
         self.rfoot_bid = self._find_body_id(["R_Foot", "right_foot", "r_foot", "RightFoot", "R_Ankle"])
         self.foot_bids = [bid for bid in (self.lfoot_bid, self.rfoot_bid) if bid is not None]
+
+        self.lknee_bid = self._find_body_id(["L_Knee"])
+        self.rknee_bid = self._find_body_id(["R_Knee"])
+        self.knee_bids = [bid for bid in (self.lknee_bid, self.rknee_bid) if bid is not None]
+
+        if self.knee_bids:
+            print(
+                "[KINTWIN] knee_bids:",
+                [
+                    (bid, mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, bid))
+                    for bid in self.knee_bids
+                ],
+            )
+        else:
+            print("[KINTWIN][WARN] No knee bodies found; knee_ground_cost will be disabled.")
+
+        self.lknee_geom_id = self._find_geom_id(["L_Knee"])
+        self.rknee_geom_id = self._find_geom_id(["R_Knee"])
+        self.knee_geom_ids = [gid for gid in (self.lknee_geom_id, self.rknee_geom_id) if gid is not None]
+
+        if self.knee_geom_ids:
+            print(
+                "[KINTWIN] knee_geom_ids:",
+                [
+                    (gid, mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_GEOM, gid))
+                    for gid in self.knee_geom_ids
+                ],
+            )
+        else:
+            print("[KINTWIN][WARN] No knee geoms found; knee contact penalty will be disabled.")
+
+        self.floor_gid = self._find_geom_id(["floor"])
 
         self.track_body_names = [
             "Pelvis",
@@ -285,6 +319,13 @@ class CurriculumBadmintonEnv(gym.Env):
             idx = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SITE, n)
             if idx != -1:
                 return idx
+        return None
+
+    def _find_geom_id(self, names: List[str]) -> Optional[int]:
+        for n in names:
+            gid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, n)
+            if gid >= 0:
+                return gid
         return None
 
     def _site_linear_velocity(self, data: mujoco.MjData, site_id: int) -> np.ndarray:
@@ -471,6 +512,8 @@ class CurriculumBadmintonEnv(gym.Env):
         self.t = 0
         self.prev_action = np.zeros(self.action_space.shape, dtype=np.float64)
         self.prev_prev_action = np.zeros(self.action_space.shape, dtype=np.float64)
+        self.knee_contact_frames = 0
+        self.crouch_frames = 0
 
         # Start from reference pose for easier stabilization and faster curriculum convergence.
         idx0 = self._target_index()
@@ -502,6 +545,8 @@ class CurriculumBadmintonEnv(gym.Env):
                 self.base_env.reset(options={"qpos": tqpos, "qvel": tqvel})
                 self.prev_action = np.zeros(self.action_space.shape, dtype=np.float64)
                 self.prev_prev_action = np.zeros(self.action_space.shape, dtype=np.float64)
+                self.knee_contact_frames = 0
+                self.crouch_frames = 0
                 obs = self._get_obs()
             except Exception:
                 obs, _ = self.reset()
@@ -524,6 +569,40 @@ class CurriculumBadmintonEnv(gym.Env):
         self.t += 1
         done_by_len = self.t >= self.episode_length
 
+        knee_floor_contacts = float(terms.get("r_knee_floor_contacts", 0.0))
+        if knee_floor_contacts > 0:
+            self.knee_contact_frames += 1
+        else:
+            self.knee_contact_frames = max(0, self.knee_contact_frames - 1)
+
+        knee_terminated = self.knee_contact_frames >= 3
+        terms["r_knee_contact_frames"] = float(self.knee_contact_frames)
+        terms["r_knee_terminated"] = float(1.0 if knee_terminated else 0.0)
+
+        pelvis_foot_clearance = float(terms.get("r_pelvis_foot_clearance", 999.0))
+        low_pose_cost = float(terms.get("r_low_pose_cost", 0.0))
+        r_upright = float(terms.get("r_upright", 1.0))
+
+        bad_crouch = (
+            pelvis_foot_clearance < 0.53
+            or low_pose_cost > 0.012
+            or (r_upright < 0.04 and pelvis_foot_clearance < 0.60)
+        )
+        terms["r_bad_crouch_clearance"] = float(1.0 if pelvis_foot_clearance < 0.53 else 0.0)
+        terms["r_bad_crouch_low_pose"] = float(1.0 if low_pose_cost > 0.012 else 0.0)
+        terms["r_bad_crouch_upright"] = float(
+            1.0 if (r_upright < 0.04 and pelvis_foot_clearance < 0.60) else 0.0
+        )
+
+        if bad_crouch:
+            self.crouch_frames += 1
+        else:
+            self.crouch_frames = max(0, self.crouch_frames - 1)
+
+        crouch_terminated = self.crouch_frames >= 5
+        terms["r_crouch_frames"] = float(self.crouch_frames)
+        terms["r_crouch_terminated"] = float(1.0 if crouch_terminated else 0.0)
+
         # Head-aware fall detector: pelvis too low or head drops near pelvis level.
         pelvis_h = float(self.data.xpos[self.pelvis_bid, 2]) if self.pelvis_bid is not None else float(self.data.qpos[2])
         upper_h = pelvis_h + 0.5
@@ -540,9 +619,19 @@ class CurriculumBadmintonEnv(gym.Env):
             reward -= self.fall_penalty
 
         terminated = bool(done_by_len or done_by_fall)
+        terminated = bool(terminated or knee_terminated or crouch_terminated)
         truncated = False
         obs = self._get_obs()
-        info = {**base_info, **terms, "clip": self.clip_name, "stage": self.stage}
+        if knee_terminated:
+            reward -= 8.0
+        if crouch_terminated:
+            reward -= 8.0
+        info = {
+            **base_info,
+            **terms,
+            "clip": self.clip_name,
+            "stage": self.stage,
+        }
         return obs, float(reward), terminated, truncated, info
 
     def _compute_reward(
@@ -574,7 +663,7 @@ class CurriculumBadmintonEnv(gym.Env):
         upright = bool(pelvis_ok and head_ok and torso_tilt_ok)
 
         # Shared regularization terms.
-        penalty_scale = self.upright_penalty_scale if upright else 0.0
+        penalty_scale = self.upright_penalty_scale if upright else 0.5 * self.upright_penalty_scale
         control_cost = penalty_scale * w.control_penalty * float(np.mean(np.square(action)))
         action_delta_cost = 0.003 * float(np.mean(np.square(action - self.prev_action)))
         action_accel_cost = 0.002 * float(
@@ -932,7 +1021,7 @@ class CurriculumBadmintonEnv(gym.Env):
             + 0.45 * upper_orient_mse
             + 0.25 * qpos_mse
             + 0.03 * qvel_mse
-            + 0.50 * root_mse
+            + 0.90 * root_mse
             + 0.30 * wrist_mse
         )
 
@@ -940,19 +1029,81 @@ class CurriculumBadmintonEnv(gym.Env):
 
         posture_cost = 0.0
         if not upright:
-            posture_cost += 0.35
+            posture_cost += 0.80
 
         if self.torso_bid is not None:
             torso_xmat = self.data.xmat[self.torso_bid].reshape(3, 3)
             torso_up_cos = float(torso_xmat[2, 2])
-            posture_cost += 0.80 * max(0.0, 0.82 - torso_up_cos) ** 2
+            posture_cost += 2.00 * max(0.0, 0.84 - torso_up_cos) ** 2
 
         if self.head_bid is not None and self.pelvis_bid is not None:
             head_h = float(self.data.xpos[self.head_bid, 2])
             pelvis_h = float(self.data.xpos[self.pelvis_bid, 2])
-            posture_cost += 0.40 * max(0.0, 0.45 - (head_h - pelvis_h)) ** 2
+            posture_cost += 1.00 * max(0.0, 0.50 - (head_h - pelvis_h)) ** 2
 
-        pose_cost = pose_core_cost + posture_cost
+        foot_ground_cost = 0.0
+        if self.foot_bids:
+            for foot_bid in self.foot_bids:
+                foot_z = float(self.data.xpos[foot_bid, 2])
+                ref_foot_z = float(self.ref_data.xpos[foot_bid, 2])
+
+                if ref_foot_z < 0.15:
+                    target_z = min(0.13, ref_foot_z + 0.05)
+                    foot_ground_cost += max(0.0, foot_z - target_z) ** 2
+
+        foot_ground_cost *= 8.0
+
+        crouch_cost = 0.0
+        pelvis_foot_clearance = 0.0
+
+        if self.pelvis_bid is not None and self.foot_bids:
+            pelvis_h_for_crouch = float(self.data.xpos[self.pelvis_bid, 2])
+            foot_min_z_for_crouch = min(float(self.data.xpos[bid, 2]) for bid in self.foot_bids)
+            pelvis_foot_clearance = pelvis_h_for_crouch - foot_min_z_for_crouch
+            crouch_cost = 0.8 * max(0.0, 0.55 - pelvis_foot_clearance) ** 2
+
+        knee_ground_cost = 0.0
+        knee_min_z = 0.0
+
+        if hasattr(self, "knee_bids") and self.knee_bids:
+            knee_zs = [float(self.data.xpos[bid, 2]) for bid in self.knee_bids]
+            knee_min_z = min(knee_zs)
+
+            for knee_z in knee_zs:
+                knee_ground_cost += max(0.0, 0.22 - knee_z) ** 2
+
+            knee_ground_cost *= 3.0
+
+        knee_contact_cost = 0.0
+        knee_floor_contacts = 0
+
+        if (
+            hasattr(self, "knee_geom_ids")
+            and self.knee_geom_ids
+            and self.floor_gid is not None
+        ):
+            knee_set = set(self.knee_geom_ids)
+            for ci in range(self.data.ncon):
+                c = self.data.contact[ci]
+                g1 = int(c.geom1)
+                g2 = int(c.geom2)
+
+                if (g1 in knee_set and g2 == self.floor_gid) or (
+                    g2 in knee_set and g1 == self.floor_gid
+                ):
+                    knee_floor_contacts += 1
+
+            if knee_floor_contacts > 0:
+                knee_contact_cost = 1.0 * knee_floor_contacts
+
+        pose_cost = (
+            pose_core_cost
+            + posture_cost
+            + foot_ground_cost
+            + crouch_cost
+            + knee_ground_cost
+            + knee_contact_cost
+        )
 
         swing_vel_cost_raw = (
             0.010 * wrist_vel_mse
@@ -960,12 +1111,21 @@ class CurriculumBadmintonEnv(gym.Env):
         )
         swing_vel_cost = float(np.clip(swing_vel_cost_raw, 0.0, 0.20))
 
-        r_track_mse = (
+        support_gate = 1.0
+        if pelvis_foot_clearance < 0.60:
+            support_gate *= 0.5
+        if low_pose_cost > 0.012:
+            support_gate *= 0.5
+        if r_upright < 0.06 and pelvis_foot_clearance < 0.65:
+            support_gate *= 0.5
+
+        r_track_mse_raw = (
             1.00
-            + 0.30 * r_balance_base_norm
+            + 0.45 * r_balance_base_norm
             - pose_cost
             - 0.20 * swing_vel_cost
         )
+        r_track_mse = 0.30 * r_track_mse_raw + 0.70 * support_gate * r_track_mse_raw
 
         racket_cost_raw = (
             0.12 * racket_tip_mse
@@ -973,13 +1133,14 @@ class CurriculumBadmintonEnv(gym.Env):
         )
         racket_cost = float(np.clip(racket_cost_raw, 0.0, 1.5))
 
-        r_racket_mse = (
-            0.70 * r_track_mse
-            + 0.25 * r_balance_base_norm
+        r_racket_mse_raw = (
+            0.65 * r_track_mse
+            + 0.35 * r_balance_base_norm
             + 0.15 * r_racket_task
             - racket_cost
             - 0.50 * swing_vel_cost
         )
+        r_racket_mse = 0.30 * r_racket_mse_raw + 0.70 * support_gate * r_racket_mse_raw
 
         reward_mode_mse = self.reward_mode == "mse_hybrid"
 
@@ -1000,7 +1161,10 @@ class CurriculumBadmintonEnv(gym.Env):
             "r_track": float(r_track),
             "r_racket": float(r_racket),
             "r_track_mse": float(r_track_mse),
+            "r_track_mse_raw": float(r_track_mse_raw),
             "r_racket_mse": float(r_racket_mse),
+            "r_racket_mse_raw": float(r_racket_mse_raw),
+            "r_support_gate": float(support_gate),
             "r_reward_mode_mse": 1.0 if reward_mode_mse else 0.0,
             "r_balance_norm": float(r_balance_norm),
             "r_balance_base": float(r_balance_base),
@@ -1018,6 +1182,13 @@ class CurriculumBadmintonEnv(gym.Env):
             "r_pose_core_cost": float(pose_core_cost),
             "r_pose_core_cost_raw": float(pose_core_cost_raw),
             "r_posture_cost": float(posture_cost),
+            "r_foot_ground_cost": float(foot_ground_cost),
+            "r_crouch_cost": float(crouch_cost),
+            "r_pelvis_foot_clearance": float(pelvis_foot_clearance),
+            "r_knee_ground_cost": float(knee_ground_cost),
+            "r_knee_min_z": float(knee_min_z),
+            "r_knee_contact_cost": float(knee_contact_cost),
+            "r_knee_floor_contacts": float(knee_floor_contacts),
             "r_swing_vel_cost": float(swing_vel_cost),
             "r_swing_vel_cost_raw": float(swing_vel_cost_raw),
             "r_qpos_mse": float(qpos_mse),

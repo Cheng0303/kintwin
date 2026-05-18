@@ -115,7 +115,7 @@ def main() -> None:
     cfg_path = Path(args.config)
     if not cfg_path.is_absolute():
         cfg_path = repo_root / cfg_path
-
+    print(f"Using config: {cfg_path}")
     cfg = _load_json(cfg_path)
     params = _resolve_profile(cfg, args.profile)
 
