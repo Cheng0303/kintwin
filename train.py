@@ -583,25 +583,50 @@ class CurriculumBadmintonEnv(gym.Env):
         low_pose_cost = float(terms.get("r_low_pose_cost", 0.0))
         r_upright = float(terms.get("r_upright", 1.0))
 
-        bad_crouch = (
-            pelvis_foot_clearance < 0.53
-            or low_pose_cost > 0.012
-            or (r_upright < 0.04 and pelvis_foot_clearance < 0.60)
+        # Bad collapse: allow athletic crouch; terminate only on collapse evidence.
+        # V10_13 failure mode: foot support lost (low contact) despite tracking gains.
+        foot_contact_count = float(terms.get("r_foot_contact_count", 0.0))
+        collapse_knee = knee_floor_contacts > 0.0
+        collapse_clearance_lowpose = (
+            pelvis_foot_clearance < 0.50
+            and low_pose_cost > 0.010
         )
-        terms["r_bad_crouch_clearance"] = float(1.0 if pelvis_foot_clearance < 0.53 else 0.0)
-        terms["r_bad_crouch_low_pose"] = float(1.0 if low_pose_cost > 0.012 else 0.0)
-        terms["r_bad_crouch_upright"] = float(
-            1.0 if (r_upright < 0.04 and pelvis_foot_clearance < 0.60) else 0.0
+        collapse_upright_clearance = (
+            r_upright < 0.04
+            and pelvis_foot_clearance < 0.58
+            and low_pose_cost > 0.006
+        )
+        collapse_foot_support = (
+            foot_contact_count < 0.5
+            and r_upright < 0.05
+        )
+        bad_collapse = (
+            collapse_knee
+            or collapse_clearance_lowpose
+            or collapse_upright_clearance
+            or collapse_foot_support
         )
 
-        if bad_crouch:
+        terms["r_bad_collapse_knee_contact"] = float(1.0 if collapse_knee else 0.0)
+        terms["r_bad_collapse_clearance_lowpose"] = float(1.0 if collapse_clearance_lowpose else 0.0)
+        terms["r_bad_collapse_upright_clearance"] = float(1.0 if collapse_upright_clearance else 0.0)
+        terms["r_bad_collapse_foot_support"] = float(1.0 if collapse_foot_support else 0.0)
+
+        # Backward-compatible aliases for existing dashboards.
+        terms["r_bad_crouch_clearance"] = float(1.0 if collapse_clearance_lowpose else 0.0)
+        terms["r_bad_crouch_low_pose"] = float(1.0 if collapse_clearance_lowpose else 0.0)
+        terms["r_bad_crouch_upright"] = float(1.0 if collapse_upright_clearance else 0.0)
+
+        if bad_collapse:
             self.crouch_frames += 1
         else:
             self.crouch_frames = max(0, self.crouch_frames - 1)
 
-        crouch_terminated = self.crouch_frames >= 5
+        collapse_terminated = self.crouch_frames >= 5
+        terms["r_collapse_frames"] = float(self.crouch_frames)
+        terms["r_collapse_terminated"] = float(1.0 if collapse_terminated else 0.0)
         terms["r_crouch_frames"] = float(self.crouch_frames)
-        terms["r_crouch_terminated"] = float(1.0 if crouch_terminated else 0.0)
+        terms["r_crouch_terminated"] = float(1.0 if collapse_terminated else 0.0)
 
         # Head-aware fall detector: pelvis too low or head drops near pelvis level.
         pelvis_h = float(self.data.xpos[self.pelvis_bid, 2]) if self.pelvis_bid is not None else float(self.data.qpos[2])
@@ -619,12 +644,12 @@ class CurriculumBadmintonEnv(gym.Env):
             reward -= self.fall_penalty
 
         terminated = bool(done_by_len or done_by_fall)
-        terminated = bool(terminated or knee_terminated or crouch_terminated)
+        terminated = bool(terminated or knee_terminated or collapse_terminated)
         truncated = False
         obs = self._get_obs()
         if knee_terminated:
             reward -= 8.0
-        if crouch_terminated:
+        if collapse_terminated:
             reward -= 8.0
         info = {
             **base_info,
@@ -661,6 +686,7 @@ class CurriculumBadmintonEnv(gym.Env):
             torso_xmat = self.data.xmat[self.torso_bid].reshape(3, 3)
             torso_tilt_ok = float(torso_xmat[2, 2]) >= self.upright_tilt_cos
         upright = bool(pelvis_ok and head_ok and torso_tilt_ok)
+        r_upright = 1.0 if upright else 0.0
 
         # Shared regularization terms.
         penalty_scale = self.upright_penalty_scale if upright else 0.5 * self.upright_penalty_scale
@@ -1111,13 +1137,19 @@ class CurriculumBadmintonEnv(gym.Env):
         )
         swing_vel_cost = float(np.clip(swing_vel_cost_raw, 0.0, 0.20))
 
+        # Allow athletic crouch; only gate when support looks physically unhealthy.
+        # Foot contact can drop slip cost because the feet are off ground, so gate it explicitly.
         support_gate = 1.0
-        if pelvis_foot_clearance < 0.60:
-            support_gate *= 0.5
-        if low_pose_cost > 0.012:
-            support_gate *= 0.5
-        if r_upright < 0.06 and pelvis_foot_clearance < 0.65:
-            support_gate *= 0.5
+        if pelvis_foot_clearance < 0.52 and low_pose_cost > 0.006:
+            support_gate *= 0.6
+        if r_upright < 0.04 and pelvis_foot_clearance < 0.58:
+            support_gate *= 0.6
+        if knee_floor_contacts > 0:
+            support_gate *= 0.3
+        if foot_contact_count < 0.5:
+            support_gate *= 0.4
+        elif foot_contact_count < 1.0:
+            support_gate *= 0.7
         support_mult = 0.30 + 0.70 * support_gate
 
         r_track_mse_raw = (
@@ -1222,7 +1254,7 @@ class CurriculumBadmintonEnv(gym.Env):
             "r_racket_balance_part": float(r_racket_balance_part),
             "r_racket_task": float(r_racket_task),
 
-            "r_upright": 1.0 if upright else 0.0,
+            "r_upright": float(r_upright),
             "r_foot_penalty": float(foot_penalty),
             "r_foot_raw_slip": float(foot_raw_slip),
             "r_foot_slip_cost": float(foot_slip_cost),
