@@ -1151,6 +1151,47 @@ class CurriculumBadmintonEnv(gym.Env):
 
         self._set_ref_state(tqpos, tqvel)
 
+        ref_posture_cost = 0.0
+        head_drop_excess = 0.0
+        torso_fold_excess = 0.0
+        curr_head_pelvis_h = 0.0
+        ref_head_pelvis_h = 0.0
+        curr_torso_up_cos = 0.0
+        ref_torso_up_cos = 0.0
+
+        if self.head_bid is not None and self.pelvis_bid is not None:
+            curr_head_h = float(self.data.xpos[self.head_bid, 2])
+            curr_pelvis_h = float(self.data.xpos[self.pelvis_bid, 2])
+            ref_head_h = float(self.ref_data.xpos[self.head_bid, 2])
+            ref_pelvis_h = float(self.ref_data.xpos[self.pelvis_bid, 2])
+
+            curr_head_pelvis_h = curr_head_h - curr_pelvis_h
+            ref_head_pelvis_h = ref_head_h - ref_pelvis_h
+
+            head_drop_excess = max(
+                0.0,
+                ref_head_pelvis_h - curr_head_pelvis_h - 0.05,
+            )
+
+        if self.torso_bid is not None:
+            curr_torso_xmat = self.data.xmat[self.torso_bid].reshape(3, 3)
+            ref_torso_xmat = self.ref_data.xmat[self.torso_bid].reshape(3, 3)
+
+            curr_torso_up_cos = float(curr_torso_xmat[2, 2])
+            ref_torso_up_cos = float(ref_torso_xmat[2, 2])
+
+            torso_fold_excess = max(
+                0.0,
+                ref_torso_up_cos - curr_torso_up_cos - 0.12,
+            )
+
+        if foot_contact_count >= 1.0:
+            ref_posture_cost = (
+                1.0 * head_drop_excess ** 2
+                + 0.25 * torso_fold_excess ** 2
+            )
+            ref_posture_cost = float(min(ref_posture_cost, 0.10))
+
         ref_foot_contact_count = 0.0
         ref_stable_foot_contact_count = 0.0
         ref_fast_contact_count = 0.0
@@ -1226,24 +1267,14 @@ class CurriculumBadmintonEnv(gym.Env):
 
         # foot slip 直接扣 final reward，避免只藏在 balance 裡被稀釋
         knee_lunge_cost = 0.0
-        knee_lunge_depth = max(0.0, 0.35 - knee_min_z)
-        # Badminton allows low stance and lunge.
-        # This only discourages very low knees combined with bad upright posture.
-        # It is intentionally soft to avoid killing athletic crouch.
-        if foot_contact_count >= 1.0 and r_upright < 0.05:
-            knee_lunge_cost = 0.5 * (knee_lunge_depth ** 2)
-
-        upright_recovery_cost = 0.0
-        if foot_contact_count >= 1.0:
-            upright_recovery_cost = 0.05 * max(0.0, 0.08 - r_upright)
+        knee_lunge_depth = 0.0
 
         foot_support_cost = 0.8 if foot_support_miss else 0.0
         reward = (
             reward_before_slip
             - foot_slip_cost
             - foot_support_cost
-            - knee_lunge_cost
-            - upright_recovery_cost
+            - ref_posture_cost
         )
 
         terms = {
@@ -1261,14 +1292,18 @@ class CurriculumBadmintonEnv(gym.Env):
             "r_ref_fast_contact_count": float(ref_fast_contact_count),
             "r_foot_support_miss": float(1.0 if foot_support_miss else 0.0),
             "r_foot_support_cost": float(foot_support_cost),
-            "r_knee_lunge_cost": float(knee_lunge_cost),
-            "r_knee_lunge_depth": float(knee_lunge_depth),
-            "r_upright_recovery_cost": float(upright_recovery_cost),
             "r_reward_mode_mse": 1.0 if reward_mode_mse else 0.0,
             "r_balance_norm": float(r_balance_norm),
             "r_balance_base": float(r_balance_base),
             "r_balance_base_norm": float(r_balance_base_norm),
             "r_reward_before_slip": float(reward_before_slip),
+            "r_ref_posture_cost": float(ref_posture_cost),
+            "r_head_drop_excess": float(head_drop_excess),
+            "r_torso_fold_excess": float(torso_fold_excess),
+            "r_curr_head_pelvis_h": float(curr_head_pelvis_h),
+            "r_ref_head_pelvis_h": float(ref_head_pelvis_h),
+            "r_curr_torso_up_cos": float(curr_torso_up_cos),
+            "r_ref_torso_up_cos": float(ref_torso_up_cos),
 
             "r_qpos": float(r_qpos),
             "r_qvel": float(r_qvel),
