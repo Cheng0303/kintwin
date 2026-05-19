@@ -1152,14 +1152,30 @@ class CurriculumBadmintonEnv(gym.Env):
         self._set_ref_state(tqpos, tqvel)
 
         ref_foot_contact_count = 0.0
+        ref_stable_foot_contact_count = 0.0
+        ref_fast_contact_count = 0.0
         if self.foot_bids:
             for foot_bid in self.foot_bids:
                 ref_foot_z = float(self.ref_data.xpos[foot_bid, 2])
-                if ref_foot_z < 0.15:
+                ref_foot_vel = self._body_linear_velocity(self.ref_data, foot_bid)
+                ref_foot_xy_speed = float(np.linalg.norm(ref_foot_vel[:2]))
+
+                ref_raw_contact = ref_foot_z < 0.15
+                ref_stable_contact = (
+                    ref_raw_contact
+                    and ref_foot_xy_speed < 0.8
+                )
+
+                if ref_raw_contact:
                     ref_foot_contact_count += 1.0
+                    if not ref_stable_contact:
+                        ref_fast_contact_count += 1.0
+
+                if ref_stable_contact:
+                    ref_stable_foot_contact_count += 1.0
 
         foot_support_miss = (
-            ref_foot_contact_count >= 1.0
+            ref_stable_foot_contact_count >= 1.0
             and foot_contact_count < 0.5
         )
         if foot_support_miss:
@@ -1217,12 +1233,17 @@ class CurriculumBadmintonEnv(gym.Env):
         if foot_contact_count >= 1.0 and r_upright < 0.05:
             knee_lunge_cost = 0.5 * (knee_lunge_depth ** 2)
 
+        upright_recovery_cost = 0.0
+        if foot_contact_count >= 1.0:
+            upright_recovery_cost = 0.05 * max(0.0, 0.08 - r_upright)
+
         foot_support_cost = 0.8 if foot_support_miss else 0.0
         reward = (
             reward_before_slip
             - foot_slip_cost
             - foot_support_cost
             - knee_lunge_cost
+            - upright_recovery_cost
         )
 
         terms = {
@@ -1236,10 +1257,13 @@ class CurriculumBadmintonEnv(gym.Env):
             "r_support_gate": float(support_gate),
             "r_support_mult": float(support_mult),
             "r_ref_foot_contact_count": float(ref_foot_contact_count),
+            "r_ref_stable_foot_contact_count": float(ref_stable_foot_contact_count),
+            "r_ref_fast_contact_count": float(ref_fast_contact_count),
             "r_foot_support_miss": float(1.0 if foot_support_miss else 0.0),
             "r_foot_support_cost": float(foot_support_cost),
             "r_knee_lunge_cost": float(knee_lunge_cost),
             "r_knee_lunge_depth": float(knee_lunge_depth),
+            "r_upright_recovery_cost": float(upright_recovery_cost),
             "r_reward_mode_mse": 1.0 if reward_mode_mse else 0.0,
             "r_balance_norm": float(r_balance_norm),
             "r_balance_base": float(r_balance_base),
