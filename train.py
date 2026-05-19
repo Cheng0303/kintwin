@@ -596,8 +596,10 @@ class CurriculumBadmintonEnv(gym.Env):
             and pelvis_foot_clearance < 0.58
             and low_pose_cost > 0.006
         )
+        foot_support_miss = float(terms.get("r_foot_support_miss", 0.0)) > 0.5
+
         collapse_foot_support = (
-            foot_contact_count < 0.5
+            foot_support_miss
             and r_upright < 0.05
         )
         bad_collapse = (
@@ -1146,6 +1148,9 @@ class CurriculumBadmintonEnv(gym.Env):
             support_gate *= 0.6
         if knee_floor_contacts > 0:
             support_gate *= 0.3
+
+        self._set_ref_state(tqpos, tqvel)
+
         ref_foot_contact_count = 0.0
         if self.foot_bids:
             for foot_bid in self.foot_bids:
@@ -1204,8 +1209,21 @@ class CurriculumBadmintonEnv(gym.Env):
             raise ValueError(f"Unknown stage: {self.stage}")
 
         # foot slip 直接扣 final reward，避免只藏在 balance 裡被稀釋
+        knee_lunge_cost = 0.0
+        knee_lunge_depth = max(0.0, 0.35 - knee_min_z)
+        # Badminton allows low stance and lunge.
+        # This only discourages very low knees combined with bad upright posture.
+        # It is intentionally soft to avoid killing athletic crouch.
+        if foot_contact_count >= 1.0 and r_upright < 0.05:
+            knee_lunge_cost = 0.5 * (knee_lunge_depth ** 2)
+
         foot_support_cost = 0.8 if foot_support_miss else 0.0
-        reward = reward_before_slip - foot_slip_cost - foot_support_cost
+        reward = (
+            reward_before_slip
+            - foot_slip_cost
+            - foot_support_cost
+            - knee_lunge_cost
+        )
 
         terms = {
             "r_balance": float(r_balance),
@@ -1220,6 +1238,8 @@ class CurriculumBadmintonEnv(gym.Env):
             "r_ref_foot_contact_count": float(ref_foot_contact_count),
             "r_foot_support_miss": float(1.0 if foot_support_miss else 0.0),
             "r_foot_support_cost": float(foot_support_cost),
+            "r_knee_lunge_cost": float(knee_lunge_cost),
+            "r_knee_lunge_depth": float(knee_lunge_depth),
             "r_reward_mode_mse": 1.0 if reward_mode_mse else 0.0,
             "r_balance_norm": float(r_balance_norm),
             "r_balance_base": float(r_balance_base),
